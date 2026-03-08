@@ -1,0 +1,239 @@
+// IPC wrapper functions for Tauri commands
+// Provides type-safe access to backend commands with error handling
+// Validates: Requirements 5.2, 9.4
+
+import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import type {
+  FileInfo,
+  PreviewResult,
+  RenameConfig,
+  RenameResult,
+} from './types';
+
+// ============================================================================
+// Error Handling
+// ============================================================================
+
+/**
+ * Custom error class for IPC errors
+ */
+export class IPCError extends Error {
+  constructor(
+    message: string,
+    public readonly command: string,
+    public readonly cause?: unknown
+  ) {
+    super(message);
+    this.name = 'IPCError';
+  }
+}
+
+/**
+ * Wraps IPC errors with context
+ */
+function wrapIPCError(command: string, error: unknown): IPCError {
+  if (error instanceof Error) {
+    return new IPCError(error.message, command, error);
+  }
+  return new IPCError(String(error), command, error);
+}
+
+// ============================================================================
+// Validation Result Type
+// ============================================================================
+
+/**
+ * Result of configuration validation from backend
+ */
+export interface ValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+// ============================================================================
+// Progress Event Type
+// ============================================================================
+
+/**
+ * Progress event payload for batch rename operations
+ * Validates: Requirements 9.4
+ */
+export interface ProgressEvent {
+  current: number;
+  total: number;
+  file_name: string;
+}
+
+// ============================================================================
+// IPC Command Wrappers
+// ============================================================================
+
+/**
+ * Get file information for a list of file paths
+ * 
+ * Validates: Requirements 1.1, 1.2
+ * 
+ * @param paths - List of file paths to get information for
+ * @returns Promise resolving to array of file metadata
+ * @throws IPCError if the command fails
+ */
+export async function getFileInfo(paths: string[]): Promise<FileInfo[]> {
+  try {
+    const result = await invoke<FileInfo[]>('get_file_info', { paths });
+    return result;
+  } catch (error) {
+    throw wrapIPCError('get_file_info', error);
+  }
+}
+
+/**
+ * Generate preview of rename operation
+ * 
+ * Validates: Requirements 5.1, 5.2
+ * 
+ * @param files - List of files to preview
+ * @param config - Rename configuration
+ * @returns Promise resolving to array of preview results
+ * @throws IPCError if the command fails or configuration is invalid
+ */
+export async function generatePreview(
+  files: FileInfo[],
+  config: RenameConfig
+): Promise<PreviewResult[]> {
+  try {
+    const result = await invoke<PreviewResult[]>('generate_preview', {
+      files,
+      config,
+    });
+    return result;
+  } catch (error) {
+    throw wrapIPCError('generate_preview', error);
+  }
+}
+
+/**
+ * Validate rename configuration
+ * 
+ * Validates: Requirements 3.1.5, 3.1.6, 3.2, 3.3
+ * 
+ * @param config - Rename configuration to validate
+ * @returns Promise resolving to validation result
+ * @throws IPCError if the command fails
+ */
+export async function validateConfig(
+  config: RenameConfig
+): Promise<ValidationResult> {
+  try {
+    const result = await invoke<ValidationResult>('validate_config', {
+      config,
+    });
+    return result;
+  } catch (error) {
+    throw wrapIPCError('validate_config', error);
+  }
+}
+
+/**
+ * Execute batch rename operation
+ * 
+ * Validates: Requirements 6.1, 6.2, 6.3, 6.4, 7.1, 7.2, 7.3, 7.4, 9.4
+ * 
+ * @param files - List of files to rename
+ * @param config - Rename configuration
+ * @returns Promise resolving to array of rename results
+ * @throws IPCError if the command fails or configuration is invalid
+ */
+export async function executeBatchRename(
+  files: FileInfo[],
+  config: RenameConfig
+): Promise<RenameResult[]> {
+  try {
+    const result = await invoke<RenameResult[]>('execute_batch_rename', {
+      files,
+      config,
+    });
+    return result;
+  } catch (error) {
+    throw wrapIPCError('execute_batch_rename', error);
+  }
+}
+
+// ============================================================================
+// Event Listener Utilities
+// ============================================================================
+
+/**
+ * Listen for progress updates during batch rename operations
+ * 
+ * Validates: Requirements 9.4
+ * 
+ * @param callback - Function to call when progress event is received
+ * @returns Promise resolving to unlisten function
+ * 
+ * @example
+ * ```typescript
+ * const unlisten = await onRenameProgress((event) => {
+ *   console.log(`Processing ${event.current}/${event.total}: ${event.file_name}`);
+ * });
+ * 
+ * // Later, to stop listening:
+ * unlisten();
+ * ```
+ */
+export async function onRenameProgress(
+  callback: (event: ProgressEvent) => void
+): Promise<UnlistenFn> {
+  return await listen<ProgressEvent>('rename-progress', (event) => {
+    callback(event.payload);
+  });
+}
+
+/**
+ * Helper to execute batch rename with progress tracking
+ * 
+ * Validates: Requirements 6.1, 9.4
+ * 
+ * @param files - List of files to rename
+ * @param config - Rename configuration
+ * @param onProgress - Optional callback for progress updates
+ * @returns Promise resolving to array of rename results
+ * @throws IPCError if the command fails or configuration is invalid
+ * 
+ * @example
+ * ```typescript
+ * const results = await executeBatchRenameWithProgress(
+ *   files,
+ *   config,
+ *   (event) => {
+ *     updateProgressBar(event.current, event.total);
+ *   }
+ * );
+ * ```
+ */
+export async function executeBatchRenameWithProgress(
+  files: FileInfo[],
+  config: RenameConfig,
+  onProgress?: (event: ProgressEvent) => void
+): Promise<RenameResult[]> {
+  let unlisten: UnlistenFn | undefined;
+  
+  try {
+    // Set up progress listener if callback provided
+    if (onProgress) {
+      unlisten = await onRenameProgress(onProgress);
+    }
+    
+    // Execute the batch rename
+    const results = await executeBatchRename(files, config);
+    
+    return results;
+  } finally {
+    // Clean up listener
+    if (unlisten) {
+      unlisten();
+    }
+  }
+}
+
