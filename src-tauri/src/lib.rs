@@ -9,6 +9,7 @@ pub mod models;
 use commands::{get_file_info, generate_preview, validate_config, execute_batch_rename, undo_batch_rename, list_presets, save_preset, delete_preset};
 
 use tauri::menu::{AboutMetadataBuilder, MenuBuilder, SubmenuBuilder};
+use tauri_plugin_dialog::DialogExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

@@ -1,5 +1,10 @@
 # IngestRename
 
+[![Latest Release](https://img.shields.io/github/v/release/rhodrihughes/IngestRename?style=flat-square&label=latest)](https://github.com/rhodrihughes/IngestRename/releases/latest)
+[![Download for macOS](https://img.shields.io/badge/download-macOS-blue?style=flat-square&logo=apple)](https://github.com/rhodrihughes/IngestRename/releases/latest/download/IngestRename.dmg)
+[![Download for Windows](https://img.shields.io/badge/download-Windows-blue?style=flat-square&logo=windows)](https://github.com/rhodrihughes/IngestRename/releases/latest/download/IngestRename_x64_en-US.msi)
+[![Build](https://img.shields.io/github/actions/workflow/status/rhodrihughes/IngestRename/build.yml?style=flat-square&label=build)](https://github.com/rhodrihughes/IngestRename/actions/workflows/build.yml)
+
 A desktop app for renaming files in bulk using a customizable naming convention. Built for post-production teams who need to log and track received files consistently.
 
 **Supported platforms:** Windows 10/11 · macOS Ventura (13.0)+
