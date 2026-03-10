@@ -1,4 +1,4 @@
-// Core data models for the batch file renamer application
+// Core data models for the IngestRename application
 // These models support serialization/deserialization for IPC communication
 
 use serde::{Deserialize, Serialize};
@@ -110,14 +110,35 @@ pub struct RenameResult {
     pub error: Option<String>,
 }
 
+/// A record of a completed batch rename, used for undo
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoRecord {
+    /// Human-readable label (e.g. timestamp)
+    pub label: String,
+    /// Each entry: (current_path, original_path) for files that were successfully renamed
+    pub entries: Vec<(String, String)>,
+}
+
+/// A saved preset (named rename configuration)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Preset {
+    pub name: String,
+    pub config: RenameConfig,
+}
+
 /// Types of rename operations (for Requirement 12)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum RenameOperation {
-    /// Find and replace text in filename
+    /// Find and replace text in filename (literal or regex)
     FindReplace {
         find: String,
         replace: String,
+        /// Whether `find` is a regex pattern
+        #[serde(default)]
+        use_regex: bool,
     },
     
     /// Add text at a specific position
@@ -133,6 +154,27 @@ pub enum RenameOperation {
         /// Optional separator placed between the formatted value and the filename
         separator: FormatSeparator,
     },
+
+    /// Change the case of the filename
+    ChangeCase {
+        case: CaseType,
+    },
+
+    /// Remove a specific substring from the filename
+    RemoveText {
+        text: String,
+    },
+}
+
+/// Case transformation types
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CaseType {
+    Lowercase,
+    Uppercase,
+    TitleCase,
+    CamelCase,
+    SnakeCase,
 }
 
 /// Separator character for format operations
@@ -155,12 +197,23 @@ pub enum FormatType {
         start: u32,
         increment: u32,
     },
+
+    /// Counter with configurable start, increment, and zero-padding width
+    Counter {
+        start: u32,
+        increment: u32,
+        /// Number of digits to zero-pad to (default 4)
+        #[serde(default = "default_padding")]
+        padding: u32,
+    },
     
     /// Date stamp with configurable format string
     Date {
         format: String,
     },
 }
+
+fn default_padding() -> u32 { 4 }
 
 /// Position for text insertion
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -260,13 +313,14 @@ mod tests {
         let op = RenameOperation::FindReplace {
             find: "old".to_string(),
             replace: "new".to_string(),
+            use_regex: false,
         };
         
         let json = serde_json::to_string(&op).unwrap();
         let deserialized: RenameOperation = serde_json::from_str(&json).unwrap();
         
         match deserialized {
-            RenameOperation::FindReplace { find, replace } => {
+            RenameOperation::FindReplace { find, replace, .. } => {
                 assert_eq!(find, "old");
                 assert_eq!(replace, "new");
             }

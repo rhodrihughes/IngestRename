@@ -4,10 +4,11 @@
 
 use std::path::Path;
 use chrono::Local;
+use regex::Regex;
 
 use crate::models::{
     FileMetadata, PreviewResult, PreviewStatus, RenameConfig, RenameOperation,
-    FormatType, TextPosition,
+    FormatType, TextPosition, CaseType,
 };
 use crate::file_ops::{check_path_length, PathLengthCheck};
 use crate::validator::{check_file_exists, OperatingSystem};
@@ -133,19 +134,20 @@ impl PreviewGenerator {
         seq_num: u32,
     ) -> String {
         match operation {
-            RenameOperation::FindReplace { find, replace } => {
-                // Replace all occurrences of find with replace
-                // Validates: Requirements 12.1, 12.2
-                filename.replace(find, replace)
+            RenameOperation::FindReplace { find, replace, use_regex } => {
+                if *use_regex {
+                    match Regex::new(find) {
+                        Ok(re) => re.replace_all(filename, replace.as_str()).to_string(),
+                        Err(_) => filename.to_string(), // invalid regex: leave unchanged
+                    }
+                } else {
+                    filename.replace(find, replace)
+                }
             }
             RenameOperation::AddText { text, position } => {
-                // Add text before or after the filename
-                // Validates: Requirements 12.3, 12.4
                 self.add_text(filename, text, position)
             }
             RenameOperation::Format { format, position, separator } => {
-                // Add formatted text (sequential, counter, date)
-                // Validates: Requirements 12.5, 12.6, 12.7, 12.8
                 let formatted_text = self.format_text(format, seq_num);
                 let sep = match separator {
                     crate::models::FormatSeparator::None => "",
@@ -157,6 +159,12 @@ impl PreviewGenerator {
                     TextPosition::After => format!("{}{}", sep, formatted_text),
                 };
                 self.add_text(filename, &text_with_sep, position)
+            }
+            RenameOperation::ChangeCase { case } => {
+                apply_case(filename, case)
+            }
+            RenameOperation::RemoveText { text } => {
+                filename.replace(text.as_str(), "")
             }
         }
     }
@@ -185,17 +193,20 @@ impl PreviewGenerator {
     fn format_text(&self, format: &FormatType, seq_num: u32) -> String {
         match format {
             FormatType::Sequential { start, increment } => {
-                // Calculate the sequential value for this file
-                // The seq_num is the file's position in the batch (starting from starting_number)
-                // We need to calculate how many files have been processed
                 let file_index = seq_num - self.config.starting_number;
                 let value = start + (file_index * increment);
                 format!("{:04}", value)
             }
+            FormatType::Counter { start, increment, padding } => {
+                let file_index = seq_num - self.config.starting_number;
+                let value = start + (file_index * increment);
+                let width = *padding as usize;
+                format!("{:0>width$}", value, width = width)
+            }
             FormatType::Date { format: date_format } => {
-                // Format current date according to the format string
+                let chrono_format = translate_date_format(date_format);
                 let now = Local::now();
-                now.format(date_format).to_string()
+                now.format(&chrono_format).to_string()
             }
         }
     }
@@ -224,6 +235,67 @@ impl PreviewGenerator {
             }
         }
     }
+}
+
+/// Apply a case transformation to a filename (stem only, preserving extension)
+fn apply_case(filename: &str, case: &CaseType) -> String {
+    let (stem, ext) = if let Some(dot) = filename.rfind('.') {
+        (&filename[..dot], &filename[dot..])
+    } else {
+        (filename, "")
+    };
+
+    let transformed = match case {
+        CaseType::Lowercase => stem.to_lowercase(),
+        CaseType::Uppercase => stem.to_uppercase(),
+        CaseType::TitleCase => stem
+            .split(|c: char| c == '_' || c == '-' || c == ' ')
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        CaseType::CamelCase => {
+            let words: Vec<&str> = stem.split(|c: char| c == '_' || c == '-' || c == ' ').collect();
+            let mut result = String::new();
+            for (i, word) in words.iter().enumerate() {
+                if i == 0 {
+                    result.push_str(&word.to_lowercase());
+                } else {
+                    let mut chars = word.chars();
+                    if let Some(first) = chars.next() {
+                        result.push_str(&first.to_uppercase().to_string());
+                        result.push_str(chars.as_str());
+                    }
+                }
+            }
+            result
+        }
+        CaseType::SnakeCase => stem
+            .split(|c: char| c == '-' || c == ' ')
+            .collect::<Vec<_>>()
+            .join("_")
+            .to_lowercase(),
+    };
+
+    format!("{}{}", transformed, ext)
+}
+
+/// Translate user-friendly date format tokens to chrono strftime format.
+/// Supports: YYYY → %Y, YY → %y, MM → %m, DD → %d, HH → %H, mm → %M, ss → %S
+fn translate_date_format(fmt: &str) -> String {
+    fmt
+        .replace("YYYY", "%Y")
+        .replace("YY", "%y")
+        .replace("MM", "%m")
+        .replace("DD", "%d")
+        .replace("HH", "%H")
+        .replace("mm", "%M")
+        .replace("ss", "%S")
 }
 
 #[cfg(test)]
@@ -333,6 +405,7 @@ mod tests {
             operations: vec![RenameOperation::FindReplace {
                 find: "old".to_string(),
                 replace: "new".to_string(),
+                use_regex: false,
             }],
         };
 
@@ -459,6 +532,7 @@ mod tests {
                 RenameOperation::FindReplace {
                     find: "old".to_string(),
                     replace: "new".to_string(),
+                    use_regex: false,
                 },
                 RenameOperation::AddText {
                     text: "prefix_".to_string(),

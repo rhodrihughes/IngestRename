@@ -1,5 +1,5 @@
 // Reactive stores for managing application state
-// These stores provide reactive state management for the batch file renamer
+// These stores provide reactive state management for IngestRename
 // Validates: Requirements 3.1.3, 3.4, 5.2, 9.4
 
 import { writable, derived, type Writable, type Readable } from 'svelte/store';

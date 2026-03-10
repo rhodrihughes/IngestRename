@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Batch File Renamer",
+  "productName": "IngestRename",
   "version": "1.0.0",
-  "identifier": "com.postproduction.batch-file-renamer",
+  "identifier": "com.postproduction.ingestrename",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Batch File Renamer",
+        "title": "IngestRename",
         "width": 1000,
         "height": 700,
         "resizable": true,
@@ -26,6 +26,7 @@
   "bundle": {
     "active": true,
     "targets": ["msi", "dmg"],
+    "publisher": "Rhodri Hughes",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -37,7 +38,8 @@
       "resources/app.manifest": "resources/app.manifest"
     },
     "macOS": {
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "infoPlist": "Info.plist"
     },
     "windows": {
       "wix": {

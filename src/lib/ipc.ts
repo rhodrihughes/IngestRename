@@ -9,6 +9,9 @@ import type {
   PreviewResult,
   RenameConfig,
   RenameResult,
+  UndoRecord,
+  BatchRenameResponse,
+  Preset,
 } from './types';
 
 // ============================================================================
@@ -148,9 +151,9 @@ export async function validateConfig(
 export async function executeBatchRename(
   files: FileInfo[],
   config: RenameConfig
-): Promise<RenameResult[]> {
+): Promise<BatchRenameResponse> {
   try {
-    const result = await invoke<RenameResult[]>('execute_batch_rename', {
+    const result = await invoke<BatchRenameResponse>('execute_batch_rename', {
       files,
       config,
     });
@@ -216,24 +219,51 @@ export async function executeBatchRenameWithProgress(
   files: FileInfo[],
   config: RenameConfig,
   onProgress?: (event: ProgressEvent) => void
-): Promise<RenameResult[]> {
+): Promise<BatchRenameResponse> {
   let unlisten: UnlistenFn | undefined;
   
   try {
-    // Set up progress listener if callback provided
     if (onProgress) {
       unlisten = await onRenameProgress(onProgress);
     }
-    
-    // Execute the batch rename
-    const results = await executeBatchRename(files, config);
-    
-    return results;
+    const result = await executeBatchRename(files, config);
+    return result;
   } finally {
-    // Clean up listener
     if (unlisten) {
       unlisten();
     }
+  }
+}
+
+export async function undoBatchRename(record: UndoRecord): Promise<RenameResult[]> {
+  try {
+    return await invoke<RenameResult[]>('undo_batch_rename', { record });
+  } catch (error) {
+    throw wrapIPCError('undo_batch_rename', error);
+  }
+}
+
+export async function listPresets(): Promise<Preset[]> {
+  try {
+    return await invoke<Preset[]>('list_presets');
+  } catch (error) {
+    throw wrapIPCError('list_presets', error);
+  }
+}
+
+export async function savePreset(preset: Preset): Promise<void> {
+  try {
+    await invoke('save_preset', { preset });
+  } catch (error) {
+    throw wrapIPCError('save_preset', error);
+  }
+}
+
+export async function deletePreset(name: string): Promise<void> {
+  try {
+    await invoke('delete_preset', { name });
+  } catch (error) {
+    throw wrapIPCError('delete_preset', error);
   }
 }
 

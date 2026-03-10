@@ -3,9 +3,9 @@
 // Validates: Requirements 1.1, 5.1, 5.2, 6.1, 9.4
 
 use std::path::Path;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
-use crate::models::{FileMetadata, PreviewResult, RenameConfig, RenameResult};
+use crate::models::{FileMetadata, PreviewResult, RenameConfig, RenameResult, UndoRecord, Preset};
 use crate::file_ops::{get_file_info as get_file_metadata};
 use crate::preview::PreviewGenerator;
 use crate::renamer::BatchRenamer;
@@ -130,53 +130,139 @@ fn validate_config_internal(config: &RenameConfig) -> ValidationResult {
     }
 }
 
+/// Result of execute_batch_rename including an undo record
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BatchRenameResponse {
+    pub results: Vec<RenameResult>,
+    pub undo_record: UndoRecord,
+}
+
 /// Execute batch rename operation with progress events
 ///
 /// Validates: Requirements 6.1, 6.2, 6.3, 6.4, 7.1, 7.2, 7.3, 7.4, 9.4
-///
-/// # Arguments
-/// * `files` - List of files to rename
-/// * `config` - Rename configuration
-/// * `window` - Tauri window handle for emitting progress events
-///
-/// # Returns
-/// * `Result<Vec<RenameResult>, String>` - Rename results or error message
 #[tauri::command]
 pub async fn execute_batch_rename(
     files: Vec<FileMetadata>,
     config: RenameConfig,
     window: tauri::Window,
-) -> Result<Vec<RenameResult>, String> {
+) -> Result<BatchRenameResponse, String> {
     // Validate configuration first
     let validation = validate_config_internal(&config);
     if !validation.valid {
         return Err(format!("Invalid configuration: {}", validation.errors.join(", ")));
     }
     
-    // Create batch renamer
     let os = OperatingSystem::current();
     let renamer = BatchRenamer::new(config, os);
     
-    // Execute rename with progress tracking
     let total = files.len();
     let mut results = Vec::new();
+    let mut undo_entries: Vec<(String, String)> = Vec::new();
     
     for (index, file) in files.iter().enumerate() {
-        // Emit progress event
         let progress = ProgressEvent {
             current: index + 1,
             total,
             file_name: file.name.clone(),
         };
-        
-        // Emit event (ignore errors if frontend isn't listening)
         let _ = window.emit("rename-progress", &progress);
         
-        // Rename the file
         let seq_num = renamer.config.starting_number + index as u32;
         let result = renamer.rename_single(file, seq_num);
+        if result.success {
+            undo_entries.push((result.new_path.clone(), file.path.clone()));
+        }
         results.push(result);
     }
+
+    let label = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let undo_record = UndoRecord { label, entries: undo_entries };
     
+    Ok(BatchRenameResponse { results, undo_record })
+}
+
+/// Undo a previous batch rename by reversing each successful rename
+///
+/// # Arguments
+/// * `record` - The undo record returned from a previous execute_batch_rename call
+///
+/// # Returns
+/// * `Result<Vec<RenameResult>, String>` - Results of the reverse renames
+#[tauri::command]
+pub async fn undo_batch_rename(record: UndoRecord) -> Result<Vec<RenameResult>, String> {
+    use crate::file_ops::rename_file;
+    let mut results = Vec::new();
+    for (current_path, original_path) in &record.entries {
+        let src = Path::new(current_path);
+        let dst = Path::new(original_path);
+        let success = rename_file(src, dst).is_ok();
+        let error = if success {
+            None
+        } else {
+            Some(format!("Failed to restore '{}' to '{}'", current_path, original_path))
+        };
+        results.push(RenameResult {
+            original_path: current_path.clone(),
+            new_path: original_path.clone(),
+            success,
+            error,
+        });
+    }
     Ok(results)
+}
+
+/// List saved presets from app data directory
+#[tauri::command]
+pub async fn list_presets(app: tauri::AppHandle) -> Result<Vec<Preset>, String> {
+    let presets = load_presets(&app)?;
+    Ok(presets)
+}
+
+/// Save a preset to app data directory
+#[tauri::command]
+pub async fn save_preset(app: tauri::AppHandle, preset: Preset) -> Result<(), String> {
+    let mut presets = load_presets(&app)?;
+    // Replace if name already exists
+    if let Some(existing) = presets.iter_mut().find(|p| p.name == preset.name) {
+        *existing = preset;
+    } else {
+        presets.push(preset);
+    }
+    write_presets(&app, &presets)
+}
+
+/// Delete a preset by name
+#[tauri::command]
+pub async fn delete_preset(app: tauri::AppHandle, name: String) -> Result<(), String> {
+    let mut presets = load_presets(&app)?;
+    presets.retain(|p| p.name != name);
+    write_presets(&app, &presets)
+}
+
+// ── Preset helpers ────────────────────────────────────────────────────────────
+
+fn presets_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Could not resolve app data dir: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create app data dir: {}", e))?;
+    Ok(dir.join("presets.json"))
+}
+
+fn load_presets(app: &tauri::AppHandle) -> Result<Vec<Preset>, String> {
+    let path = presets_path(app)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read presets: {}", e))?;
+    serde_json::from_str(&data).map_err(|e| format!("Failed to parse presets: {}", e))
+}
+
+fn write_presets(app: &tauri::AppHandle, presets: &[Preset]) -> Result<(), String> {
+    let path = presets_path(app)?;
+    let data = serde_json::to_string_pretty(presets)
+        .map_err(|e| format!("Failed to serialize presets: {}", e))?;
+    std::fs::write(&path, data).map_err(|e| format!("Failed to write presets: {}", e))
 }

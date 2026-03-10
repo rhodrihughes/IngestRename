@@ -12,14 +12,15 @@
     operationStatus,
     canExecute,
   } from '$lib/stores';
-  import { generatePreview, executeBatchRenameWithProgress } from '$lib/ipc';
-  import type { FileInfo, RenameConfig } from '$lib/types';
+  import { generatePreview, executeBatchRenameWithProgress, undoBatchRename } from '$lib/ipc';
+  import type { FileInfo, RenameConfig, UndoRecord } from '$lib/types';
 
   // Local reactive state bound to child components
-  // FileSelector uses $bindable, so we keep a local array and sync to the store
   let localFiles = $state<FileInfo[]>([]);
   let localConfig = $state<RenameConfig>(get(config));
   let previewError = $state<string | undefined>(undefined);
+  let lastUndoRecord = $state<UndoRecord | undefined>(undefined);
+  let undoStatus = $state<string | undefined>(undefined);
 
   // Sync store → local on mount (handles hot-reload / pre-populated state)
   onMount(() => {
@@ -61,9 +62,13 @@
   // Reactive effects: sync local state → stores and trigger preview
   // -------------------------------------------------------------------------
 
-  // When localFiles changes (FileSelector updated it via bind:), sync store + preview
+  // Sync localFiles → store
   $effect(() => {
     selectedFiles.set(localFiles);
+  });
+
+  // Trigger preview when files or config change
+  $effect(() => {
     schedulePreview(localFiles, localConfig);
   });
 
@@ -84,9 +89,11 @@
     if (files.length === 0) return;
 
     operationStatus.set({ state: 'running', progress: 0, total: files.length, results: [] });
+    lastUndoRecord = undefined;
+    undoStatus = undefined;
 
     try {
-      const results = await executeBatchRenameWithProgress(files, cfg, (event) => {
+      const response = await executeBatchRenameWithProgress(files, cfg, (event) => {
         operationStatus.update((s) => ({
           ...s,
           progress: event.current,
@@ -94,6 +101,7 @@
         }));
       });
 
+      const { results, undoRecord } = response;
       const hasErrors = results.some((r) => !r.success);
       operationStatus.set({
         state: hasErrors ? 'error' : 'completed',
@@ -101,6 +109,9 @@
         total: results.length,
         results,
       });
+      if (undoRecord.entries.length > 0) {
+        lastUndoRecord = undoRecord;
+      }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Batch rename failed';
       operationStatus.update((s) => ({
@@ -113,13 +124,30 @@
       }));
     }
   }
+
+  async function onUndo() {
+    if (!lastUndoRecord) return;
+    undoStatus = 'Undoing…';
+    try {
+      await undoBatchRename(lastUndoRecord);
+      lastUndoRecord = undefined;
+      undoStatus = 'Undo complete.';
+    } catch (err) {
+      undoStatus = err instanceof Error ? err.message : 'Undo failed';
+    }
+  }
 </script>
 
 <div class="app-layout">
   <!-- ── Header ──────────────────────────────────────────────────────────── -->
   <header class="app-header">
-    <h1 class="app-title">Batch File Renamer</h1>
-    <p class="app-subtitle">Select files, configure the naming convention, preview, and rename.</p>
+    <div class="header-inner">
+      <div>
+        <h1 class="app-title">IngestRename</h1>
+        <p class="app-subtitle">Select files, configure the naming convention, preview, and rename.</p>
+      </div>
+      <a href="/info" class="info-link" aria-label="Regex quick guide">Regex guide ↗</a>
+    </div>
   </header>
 
   <!-- ── Main content ────────────────────────────────────────────────────── -->
@@ -153,6 +181,14 @@
           previewResults={$previewResults}
           on:execute={onExecute}
         />
+        {#if lastUndoRecord}
+          <button class="undo-btn" type="button" onclick={onUndo}>
+            ↩ Undo last rename ({lastUndoRecord.entries.length} file{lastUndoRecord.entries.length === 1 ? '' : 's'})
+          </button>
+        {/if}
+        {#if undoStatus}
+          <p class="undo-status">{undoStatus}</p>
+        {/if}
       </section>
     </aside>
 
@@ -183,6 +219,13 @@
     border-bottom: 1px solid #e5e7eb;
   }
 
+  .header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
   .app-title {
     font-size: 1.25rem;
     font-weight: 700;
@@ -194,6 +237,18 @@
     font-size: 0.8125rem;
     color: #6b7280;
     margin: 0;
+  }
+
+  .info-link {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: #4f46e5;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .info-link:hover {
+    text-decoration: underline;
   }
 
   /* ── Body ────────────────────────────────────────────────────────────── */
@@ -253,6 +308,31 @@
     font-size: 0.8125rem;
   }
 
+  .undo-btn {
+    padding: 0.5rem 0.875rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    border: 1px solid #d1d5db;
+    border-radius: 0.375rem;
+    background-color: #fff;
+    color: #374151;
+    cursor: pointer;
+    transition: background-color 0.15s, border-color 0.15s;
+    width: 100%;
+    text-align: left;
+  }
+
+  .undo-btn:hover {
+    background-color: #f3f4f6;
+    border-color: #9ca3af;
+  }
+
+  .undo-status {
+    font-size: 0.8125rem;
+    color: #6b7280;
+    margin: 0;
+  }
+
   /* ── Responsive: stack on narrow windows ─────────────────────────────── */
   @media (max-width: 800px) {
     .app-body {
@@ -277,6 +357,10 @@
 
     .app-subtitle {
       color: #9ca3af;
+    }
+
+    .info-link {
+      color: #818cf8;
     }
 
     .panel {

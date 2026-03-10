@@ -1,8 +1,8 @@
 <script lang="ts">
   import { open } from '@tauri-apps/plugin-dialog';
+  import { readDir } from '@tauri-apps/plugin-fs';
   import { getFileInfo } from '$lib/ipc';
   import type { FileInfo } from '$lib/types';
-  import { Button } from 'bits-ui';
 
   // Props
   let { selectedFiles = $bindable([]) }: { selectedFiles?: FileInfo[] } = $props();
@@ -11,34 +11,59 @@
   let isSelecting = $state(false);
   let error = $state<string | undefined>(undefined);
 
-  /**
-   * Handle file selection using Tauri dialog API
-   * Validates: Requirements 1.1, 1.2, 1.3, 1.4
-   */
+  async function addPaths(paths: string[]) {
+    const fileInfos = await getFileInfo(paths);
+    const existingPaths = new Set(selectedFiles.map(f => f.path));
+    const newFiles = fileInfos.filter(f => !existingPaths.has(f.path));
+    selectedFiles = [...selectedFiles, ...newFiles];
+  }
+
   async function selectFiles() {
     try {
       isSelecting = true;
       error = undefined;
 
-      // Open native file picker with multi-file selection
-      const selected = await open({
-        multiple: true,
-        directory: false,
-      });
+      const selected = await open({ multiple: true, directory: false });
+      if (selected === null || selected === undefined) return;
 
-      // Handle selection result
-      if (selected) {
-        const paths = Array.isArray(selected) ? selected : [selected];
-        
-        // Get file metadata from backend
-        const fileInfos = await getFileInfo(paths);
-        
-        // Update selected files (preserves selection order - Requirement 1.4)
-        selectedFiles = fileInfos;
-      }
+      const paths = Array.isArray(selected) ? selected : [selected];
+      if (paths.length === 0) return;
+
+      await addPaths(paths);
     } catch (err) {
       error = err instanceof Error ? err.message : 'Failed to select files';
       console.error('File selection error:', err);
+    } finally {
+      isSelecting = false;
+    }
+  }
+
+  async function selectFolder() {
+    try {
+      isSelecting = true;
+      error = undefined;
+
+      const selected = await open({ multiple: false, directory: true });
+      if (selected === null || selected === undefined) return;
+
+      const folderPath = Array.isArray(selected) ? selected[0] : selected;
+
+      // Read top-level entries, filter to files only (no subdirectories)
+      const entries = await readDir(folderPath);
+      const filePaths = entries
+        .filter(e => e.isFile)
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
+        .map(e => `${folderPath}/${e.name}`);
+
+      if (filePaths.length === 0) {
+        error = 'No files found in the selected folder.';
+        return;
+      }
+
+      await addPaths(filePaths);
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to read folder';
+      console.error('Folder selection error:', err);
     } finally {
       isSelecting = false;
     }
@@ -73,22 +98,16 @@
 <div class="file-selector">
   <!-- File selection button -->
   <div class="selection-controls">
-    <Button.Root
-      onclick={selectFiles}
-      disabled={isSelecting}
-      class="select-button"
-    >
+    <button class="select-button" onclick={selectFiles} disabled={isSelecting}>
       {isSelecting ? 'Selecting...' : 'Select Files'}
-    </Button.Root>
-
+    </button>
+    <button class="select-button select-button--folder" onclick={selectFolder} disabled={isSelecting}>
+      Select Folder
+    </button>
     {#if selectedFiles.length > 0}
-      <Button.Root
-        onclick={clearSelection}
-        variant="outline"
-        class="clear-button"
-      >
+      <button class="clear-button" onclick={clearSelection}>
         Clear All ({selectedFiles.length})
-      </Button.Root>
+      </button>
     {/if}
   </div>
 
@@ -118,15 +137,11 @@
                 </span>
               </div>
             </div>
-            <Button.Root
-              onclick={() => removeFile(index)}
-              variant="ghost"
-              size="sm"
+            <button
               class="remove-button"
+              onclick={() => removeFile(index)}
               aria-label="Remove {file.name}"
-            >
-              ×
-            </Button.Root>
+            >×</button>
           </li>
         {/each}
       </ul>
@@ -149,6 +164,64 @@
     display: flex;
     gap: 0.5rem;
     align-items: center;
+  }
+
+  .select-button {
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    background-color: #4f46e5;
+    color: #fff;
+    border: none;
+    border-radius: 0.375rem;
+    cursor: pointer;
+    transition: background-color 0.15s;
+  }
+
+  .select-button:hover:not(:disabled) {
+    background-color: #4338ca;
+  }
+
+  .select-button--folder {
+    background-color: #6b7280;
+  }
+
+  .select-button--folder:hover:not(:disabled) {
+    background-color: #4b5563;
+  }
+
+  .clear-button {
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    background-color: transparent;
+    color: #374151;
+    border: 1px solid #d1d5db;
+    border-radius: 0.375rem;
+    cursor: pointer;
+    transition: background-color 0.15s;
+  }
+
+  .clear-button:hover {
+    background-color: #f3f4f6;
+  }
+
+  .remove-button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: #9ca3af;
+    font-size: 1rem;
+    padding: 0.25rem 0.375rem;
+    border-radius: 0.25rem;
+    line-height: 1;
+    transition: color 0.15s, background-color 0.15s;
+    flex-shrink: 0;
+  }
+
+  .remove-button:hover {
+    color: #ef4444;
+    background-color: #fee2e2;
   }
 
   .error-message {
@@ -287,6 +360,15 @@
       background-color: #7f1d1d;
       border-color: #991b1b;
       color: #fecaca;
+    }
+
+    .clear-button {
+      color: #d1d5db;
+      border-color: #374151;
+    }
+
+    .clear-button:hover {
+      background-color: #374151;
     }
   }
 </style>

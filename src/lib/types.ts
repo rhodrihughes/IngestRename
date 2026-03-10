@@ -1,4 +1,4 @@
-// Type definitions for the batch file renamer application
+// Type definitions for the IngestRename application
 // These types mirror the Rust backend models for type-safe IPC communication
 // Validates: Requirements 1.1, 3.1.1, 3.1.2, 4.1, 9.4
 
@@ -35,16 +35,21 @@ export type TextPosition = 'before' | 'after';
 /** Separator character placed between the formatted value and the filename */
 export type FormatSeparator = 'none' | '_' | '-';
 
+export type CaseType = 'lowercase' | 'uppercase' | 'title-case' | 'camel-case' | 'snake-case';
+
 export type RenameOperation =
-  | { type: 'find-replace'; find: string; replace: string }
+  | { type: 'find-replace'; find: string; replace: string; useRegex?: boolean }
   | { type: 'add-text'; text: string; position: TextPosition }
-  | { type: 'format'; format: FormatType; position: TextPosition; separator: FormatSeparator };
+  | { type: 'format'; format: FormatType; position: TextPosition; separator: FormatSeparator }
+  | { type: 'change-case'; case: CaseType }
+  | { type: 'remove-text'; text: string };
 
 /**
  * Types of format operations
  */
 export type FormatType =
   | { type: 'sequential'; start: number; increment: number }
+  | { type: 'counter'; start: number; increment: number; padding: number }
   | { type: 'date'; format: string };
 
 // ============================================================================
@@ -118,6 +123,25 @@ export interface RenameResult {
   
   /** Error message if the rename failed */
   error?: string;
+}
+
+/** A record of a completed batch rename, used for undo */
+export interface UndoRecord {
+  label: string;
+  /** [currentPath, originalPath] pairs for successfully renamed files */
+  entries: [string, string][];
+}
+
+/** Response from execute_batch_rename */
+export interface BatchRenameResponse {
+  results: RenameResult[];
+  undoRecord: UndoRecord;
+}
+
+/** A saved named preset */
+export interface Preset {
+  name: string;
+  config: RenameConfig;
 }
 
 // ============================================================================

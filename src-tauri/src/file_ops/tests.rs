@@ -355,7 +355,7 @@ mod property_tests {
     }
     
     proptest! {
-        // Feature: batch-file-renamer, Property 7: Original Filename Preservation
+        // Feature: ingestrename, Property 7: Original Filename Preservation
         #[test]
         fn test_get_file_info_preserves_filename(
             filename in valid_filename(),
@@ -372,7 +372,7 @@ mod property_tests {
             prop_assert_eq!(info.extension.as_deref(), Some(extension.as_str()));
         }
         
-        // Feature: batch-file-renamer, Property 8: Extension Case Preservation
+        // Feature: ingestrename, Property 8: Extension Case Preservation
         #[test]
         fn test_extension_case_preservation(
             filename in valid_filename(),
@@ -392,7 +392,7 @@ mod property_tests {
             }
         }
         
-        // Feature: batch-file-renamer, Property 13: File Location Preservation
+        // Feature: ingestrename, Property 13: File Location Preservation
         #[test]
         fn test_rename_preserves_directory(
             old_name in valid_filename(),
@@ -416,7 +416,7 @@ mod property_tests {
             }
         }
         
-        // Feature: batch-file-renamer, Property 22: Special Character Handling
+        // Feature: ingestrename, Property 22: Special Character Handling
         #[test]
         fn test_special_characters_in_filename(
             base_name in "[a-zA-Z0-9]{1,20}",

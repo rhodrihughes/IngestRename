@@ -1,4 +1,4 @@
-# Contributing to Batch File Renamer
+# Contributing to IngestRename
 
 Developer guide for building, testing, and extending the project.
 
@@ -7,7 +7,7 @@ Developer guide for building, testing, and extending the project.
 ## Project structure
 
 ```
-batch-file-renamer/
+IngestRename/
 ├── src/                          # SvelteKit frontend
 │   ├── lib/
 │   │   ├── components/           # Svelte UI components

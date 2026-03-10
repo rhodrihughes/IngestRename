@@ -3,10 +3,10 @@
   <assemblyIdentity
     version="1.0.0.0"
     processorArchitecture="*"
-    name="com.postproduction.batch-file-renamer"
+    name="com.postproduction.ingestrename"
     type="win32"
   />
-  <description>Batch File Renamer</description>
+  <description>IngestRename</description>
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>

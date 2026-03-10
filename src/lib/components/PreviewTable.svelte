@@ -2,6 +2,21 @@
   import type { PreviewResult } from '$lib/types';
 
   export let previewResults: PreviewResult[] = [];
+
+  let copiedOriginal = false;
+  let copiedNew = false;
+
+  async function copyNames(type: 'original' | 'new') {
+    const names = previewResults.map(r => type === 'original' ? r.originalName : r.newName).join('\n');
+    await navigator.clipboard.writeText(names);
+    if (type === 'original') {
+      copiedOriginal = true;
+      setTimeout(() => (copiedOriginal = false), 1500);
+    } else {
+      copiedNew = true;
+      setTimeout(() => (copiedNew = false), 1500);
+    }
+  }
 </script>
 
 <div class="preview-table-wrapper">
@@ -18,8 +33,30 @@
       <table class="table">
         <thead>
           <tr>
-            <th scope="col" class="th">Original Name</th>
-            <th scope="col" class="th">New Name</th>
+            <th scope="col" class="th">
+              <span class="th-content">
+                Original Name
+                <button class="copy-btn" on:click={() => copyNames('original')} title="Copy original names" aria-label="Copy all original file names">
+                  {#if copiedOriginal}
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clip-rule="evenodd" /></svg>
+                  {:else}
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M7 3.5A1.5 1.5 0 0 1 8.5 2h3.879a1.5 1.5 0 0 1 1.06.44l3.122 3.12A1.5 1.5 0 0 1 17 6.622V12.5a1.5 1.5 0 0 1-1.5 1.5h-1v-3.379a3 3 0 0 0-.879-2.121L10.5 5.379A3 3 0 0 0 8.379 4.5H7v-1Z" /><path d="M4.5 6A1.5 1.5 0 0 0 3 7.5v9A1.5 1.5 0 0 0 4.5 18h7a1.5 1.5 0 0 0 1.5-1.5v-5.879a1.5 1.5 0 0 0-.44-1.06L9.44 6.439A1.5 1.5 0 0 0 8.378 6H4.5Z" /></svg>
+                  {/if}
+                </button>
+              </span>
+            </th>
+            <th scope="col" class="th">
+              <span class="th-content">
+                New Name
+                <button class="copy-btn" on:click={() => copyNames('new')} title="Copy new names" aria-label="Copy all new file names">
+                  {#if copiedNew}
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clip-rule="evenodd" /></svg>
+                  {:else}
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M7 3.5A1.5 1.5 0 0 1 8.5 2h3.879a1.5 1.5 0 0 1 1.06.44l3.122 3.12A1.5 1.5 0 0 1 17 6.622V12.5a1.5 1.5 0 0 1-1.5 1.5h-1v-3.379a3 3 0 0 0-.879-2.121L10.5 5.379A3 3 0 0 0 8.379 4.5H7v-1Z" /><path d="M4.5 6A1.5 1.5 0 0 0 3 7.5v9A1.5 1.5 0 0 0 4.5 18h7a1.5 1.5 0 0 0 1.5-1.5v-5.879a1.5 1.5 0 0 0-.44-1.06L9.44 6.439A1.5 1.5 0 0 0 8.378 6H4.5Z" /></svg>
+                  {/if}
+                </button>
+              </span>
+            </th>
             <th scope="col" class="th th-status">Status</th>
           </tr>
         </thead>
@@ -147,6 +184,36 @@
 
   .th-status {
     width: 7rem;
+  }
+
+  .th-content {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.125rem;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    color: #9ca3af;
+    border-radius: 0.25rem;
+    transition: color 0.1s, background-color 0.1s;
+    line-height: 0;
+  }
+
+  .copy-btn:hover {
+    color: #374151;
+    background-color: #e5e7eb;
+  }
+
+  .copy-btn svg {
+    width: 0.875rem;
+    height: 0.875rem;
   }
 
   /* ── Rows ────────────────────────────────────────────────────────────── */
@@ -280,6 +347,11 @@
       background-color: #1f2937;
       color: #9ca3af;
       border-bottom-color: #374151;
+    }
+
+    .copy-btn:hover {
+      color: #d1d5db;
+      background-color: #374151;
     }
 
     .tr {
