@@ -19,10 +19,32 @@ export interface RenameConfig {
   
   /** Optional text inserted between sequential number and original filename */
   additionalText?: string;
-  
+
+  /**
+   * Where the incrementing sequence number is placed (default: 'start').
+   *
+   * - 'start': the number after the prefix increments per file
+   *   (e.g. BFR_0001_..., BFR_0002_...).
+   * - 'end': the number after the prefix stays fixed at startingNumber for
+   *   every file, and an incrementing counter is appended to the end of each
+   *   filename (e.g. BFR_0001_..._01, BFR_0001_..._02).
+   */
+  numberPosition?: NumberPosition;
+
+  /** Starting value for the appended counter when numberPosition is 'end' (default: 1) */
+  endNumberStart?: number;
+
+  /** Zero-padding width for the appended counter when numberPosition is 'end' (default: 2) */
+  endNumberPadding?: number;
+
   /** List of rename operations to apply (for Requirement 12) */
   operations: RenameOperation[];
 }
+
+/**
+ * Position of the incrementing sequence number in the generated filename
+ */
+export type NumberPosition = 'start' | 'end';
 
 /**
  * Position for text insertion
@@ -395,6 +417,9 @@ export function createDefaultConfig(): RenameConfig {
     prefix: 'BFR',
     startingNumber: 1,
     additionalText: undefined,
+    numberPosition: 'start',
+    endNumberStart: 1,
+    endNumberPadding: 2,
     operations: []
   };
 }

@@ -43,10 +43,7 @@ impl BatchRenamer {
         files
             .iter()
             .enumerate()
-            .map(|(index, file)| {
-                let seq_num = self.config.starting_number + index as u32;
-                self.rename_single(file, seq_num)
-            })
+            .map(|(index, file)| self.rename_single(file, index))
             .collect()
     }
 
@@ -61,31 +58,18 @@ impl BatchRenamer {
     ///
     /// # Arguments
     /// * `file` - File metadata for the file to rename
-    /// * `seq_num` - Sequential number for this file
+    /// * `index` - Zero-based position of this file within the batch
     ///
     /// # Returns
     /// * RenameResult with success status and error message if failed
-    pub fn rename_single(&self, file: &FileMetadata, seq_num: u32) -> RenameResult {
-        // Use the preview generator to construct the target name
-        // This ensures consistency between preview and execution
-        
-        // Create a temporary config with the correct starting number for this specific file
-        let mut temp_config = self.config.clone();
-        temp_config.starting_number = seq_num;
-        let temp_generator = PreviewGenerator::new(temp_config, self.os);
-        
-        let preview = temp_generator.generate_preview(&[file.clone()]);
-        
-        if preview.is_empty() {
-            return RenameResult {
-                original_path: file.path.clone(),
-                new_path: file.path.clone(),
-                success: false,
-                error: Some("Failed to generate preview for file".to_string()),
-            };
-        }
-        
-        let target_path = &preview[0].new_path;
+    pub fn rename_single(&self, file: &FileMetadata, index: usize) -> RenameResult {
+        // Use the preview generator to construct the target name.
+        // This ensures consistency between preview and execution: the same
+        // index drives the leading number, trailing counter and format ops.
+        let generator = PreviewGenerator::new(self.config.clone(), self.os);
+        let preview = generator.preview_for_index(file, index);
+
+        let target_path = &preview.new_path;
         
         // Attempt to rename the file
         let original_path = Path::new(&file.path);
@@ -168,10 +152,12 @@ mod tests {
             starting_number: 1,
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
         
         let renamer = BatchRenamer::new(config, OperatingSystem::current());
-        let result = renamer.rename_single(&file, 1);
+        let result = renamer.rename_single(&file, 0);
         
         assert!(result.success);
         assert!(result.error.is_none());
@@ -196,10 +182,12 @@ mod tests {
             starting_number: 1,
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
         
         let renamer = BatchRenamer::new(config, OperatingSystem::current());
-        let result = renamer.rename_single(&file, 1);
+        let result = renamer.rename_single(&file, 0);
         
         assert!(!result.success);
         assert!(result.error.is_some());
@@ -216,6 +204,8 @@ mod tests {
             starting_number: 1,
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
         
         let file = FileMetadata {
@@ -226,7 +216,7 @@ mod tests {
         };
         
         let renamer = BatchRenamer::new(config, OperatingSystem::current());
-        let result = renamer.rename_single(&file, 1);
+        let result = renamer.rename_single(&file, 0);
         
         assert!(!result.success);
         assert!(result.error.is_some());
@@ -246,6 +236,8 @@ mod tests {
             starting_number: 10,
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
         
         let renamer = BatchRenamer::new(config, OperatingSystem::current());
@@ -280,6 +272,8 @@ mod tests {
             starting_number: 1,
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
         
         let renamer = BatchRenamer::new(config, OperatingSystem::current());
@@ -308,6 +302,8 @@ mod tests {
             starting_number: 1,
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
         
         let renamer = BatchRenamer::new(config, OperatingSystem::current());
@@ -350,6 +346,8 @@ mod tests {
             starting_number: 1,
             additional_text: Some("Scene5".to_string()),
             operations: vec![],
+        
+            ..Default::default()
         };
         
         let renamer = BatchRenamer::new(config, OperatingSystem::current());
@@ -388,6 +386,8 @@ mod tests {
             starting_number: 1,
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
         
         let renamer = BatchRenamer::new(config, OperatingSystem::current());

@@ -12,6 +12,8 @@ fn test_validate_config_internal_valid() {
         starting_number: 1,
         additional_text: None,
         operations: vec![],
+    
+        ..Default::default()
     };
     
     let result = validate_config_internal(&config);
@@ -26,6 +28,8 @@ fn test_validate_config_internal_invalid_prefix() {
         starting_number: 1,
         additional_text: None,
         operations: vec![],
+    
+        ..Default::default()
     };
     
     let result = validate_config_internal(&config);
@@ -50,6 +54,8 @@ fn test_validate_config_internal_invalid_starting_number() {
         starting_number: 10000, // Too high
         additional_text: None,
         operations: vec![],
+    
+        ..Default::default()
     };
     
     let result = validate_config_internal(&config);
@@ -65,6 +71,8 @@ fn test_validate_config_internal_invalid_additional_text() {
         starting_number: 1,
         additional_text: Some("text/with/slashes".to_string()), // Invalid on all platforms
         operations: vec![],
+    
+        ..Default::default()
     };
     
     let result = validate_config_internal(&config);
@@ -80,6 +88,8 @@ fn test_validate_config_internal_multiple_errors() {
         starting_number: 0, // Invalid
         additional_text: None,
         operations: vec![],
+    
+        ..Default::default()
     };
     
     let result = validate_config_internal(&config);
@@ -97,12 +107,15 @@ fn test_validate_config_internal_with_operations() {
             RenameOperation::FindReplace {
                 find: "old".to_string(),
                 replace: "new".to_string(),
+                use_regex: false,
             },
             RenameOperation::AddText {
                 text: "prefix".to_string(),
                 position: TextPosition::Before,
             },
         ],
+    
+        ..Default::default()
     };
     
     let result = validate_config_internal(&config);
@@ -193,6 +206,8 @@ mod integration_tests {
             starting_number: 1,
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
 
         let result = generate_preview(vec![file], config).await;
@@ -217,6 +232,8 @@ mod integration_tests {
             starting_number: 10000, // Invalid
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
 
         let result = generate_preview(vec![file], config).await;
@@ -231,6 +248,8 @@ mod integration_tests {
             starting_number: 1,
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
 
         let result = validate_config(config).await;
@@ -248,6 +267,8 @@ mod integration_tests {
             starting_number: 0, // Invalid
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
 
         let result = validate_config(config).await;
@@ -265,6 +286,8 @@ mod integration_tests {
             starting_number: 1,
             additional_text: Some("Scene1".to_string()),
             operations: vec![],
+        
+            ..Default::default()
         };
 
         let result = validate_config(config).await;
@@ -282,6 +305,8 @@ mod integration_tests {
             starting_number: 1,
             additional_text: Some("Scene/1".to_string()), // Invalid
             operations: vec![],
+        
+            ..Default::default()
         };
 
         let result = validate_config(config).await;

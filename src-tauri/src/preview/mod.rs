@@ -8,7 +8,7 @@ use regex::Regex;
 
 use crate::models::{
     FileMetadata, PreviewResult, PreviewStatus, RenameConfig, RenameOperation,
-    FormatType, TextPosition, CaseType,
+    FormatType, TextPosition, CaseType, NumberPosition,
 };
 use crate::file_ops::{check_path_length, PathLengthCheck};
 use crate::validator::{check_file_exists, OperatingSystem};
@@ -43,17 +43,24 @@ impl PreviewGenerator {
         files
             .iter()
             .enumerate()
-            .map(|(index, file)| {
-                let seq_num = self.config.starting_number + index as u32;
-                self.generate_single_preview(file, seq_num)
-            })
+            .map(|(index, file)| self.generate_single_preview(file, index))
             .collect()
     }
 
+    /// Generate the preview for a single file at a given position in the batch.
+    ///
+    /// `index` is the zero-based position of the file within the batch and
+    /// drives all incrementing values (leading number, trailing counter and
+    /// format operations). This is used by both preview generation and the
+    /// batch renamer so previews and executed renames always match.
+    pub fn preview_for_index(&self, file: &FileMetadata, index: usize) -> PreviewResult {
+        self.generate_single_preview(file, index)
+    }
+
     /// Generate preview for a single file
-    fn generate_single_preview(&self, file: &FileMetadata, seq_num: u32) -> PreviewResult {
+    fn generate_single_preview(&self, file: &FileMetadata, index: usize) -> PreviewResult {
         // Construct the target filename
-        let new_name = self.construct_target_name(&file.name, seq_num);
+        let new_name = self.construct_target_name(&file.name, index);
 
         // Construct the full target path
         let original_path = Path::new(&file.path);
@@ -77,24 +84,35 @@ impl PreviewGenerator {
     ///
     /// Validates: Requirements 4.1, 4.2, 4.3, 4.4, 4.5, 4.6
     ///
-    /// Format: [prefix]_[NNNN]_[additional_text]_[original_filename]
-    /// Where additional_text is omitted if not provided
+    /// Format (Start position): [prefix]_[NNNN]_[additional_text]_[original_filename]
+    /// Format (End position):   [prefix]_[NNNN]_[additional_text]_[original_filename]_[MM]
+    /// Where additional_text is omitted if not provided.
+    ///
+    /// In `Start` position the leading `NNNN` increments per file. In `End`
+    /// position the leading `NNNN` stays fixed at `starting_number` and the
+    /// trailing `MM` counter increments per file instead.
     ///
     /// # Arguments
     /// * `original_name` - Original filename (including extension)
-    /// * `seq_num` - Sequential number for this file
+    /// * `index` - Zero-based position of this file within the batch
     ///
     /// # Returns
     /// * Target filename string
-    fn construct_target_name(&self, original_name: &str, seq_num: u32) -> String {
+    fn construct_target_name(&self, original_name: &str, index: usize) -> String {
         // Apply operations to the original filename first
-        let processed_name = self.apply_operations(original_name, seq_num);
+        let processed_name = self.apply_operations(original_name, index);
 
-        // Format sequential number as 4-digit zero-padded string
-        let seq_str = format!("{:04}", seq_num);
+        // The leading number is fixed in End mode, incrementing in Start mode.
+        let leading_num = match self.config.number_position {
+            NumberPosition::Start => self.config.starting_number + index as u32,
+            NumberPosition::End => self.config.starting_number,
+        };
 
-        // Build the target name according to the naming convention
-        if let Some(ref additional_text) = self.config.additional_text {
+        // Format leading number as 4-digit zero-padded string
+        let seq_str = format!("{:04}", leading_num);
+
+        // Build the base name according to the naming convention
+        let base = if let Some(ref additional_text) = self.config.additional_text {
             // With additional text: [prefix]_[NNNN]_[additional_text]_[processed_name]
             format!(
                 "{}_{}_{}_{}",
@@ -103,6 +121,17 @@ impl PreviewGenerator {
         } else {
             // Without additional text: [prefix]_[NNNN]_[processed_name]
             format!("{}_{}_{}",  self.config.prefix, seq_str, processed_name)
+        };
+
+        // In End mode, append an incrementing counter before the extension.
+        match self.config.number_position {
+            NumberPosition::Start => base,
+            NumberPosition::End => {
+                let counter = self.config.end_number_start + index as u32;
+                let width = self.config.end_number_padding as usize;
+                let counter_str = format!("{:0>width$}", counter, width = width);
+                insert_before_extension(&base, &format!("_{}", counter_str))
+            }
         }
     }
 
@@ -112,15 +141,15 @@ impl PreviewGenerator {
     ///
     /// # Arguments
     /// * `filename` - Original filename
-    /// * `seq_num` - Sequential number (for format operations)
+    /// * `index` - Zero-based position of this file within the batch (for format operations)
     ///
     /// # Returns
     /// * Processed filename with all operations applied
-    fn apply_operations(&self, filename: &str, seq_num: u32) -> String {
+    fn apply_operations(&self, filename: &str, index: usize) -> String {
         let mut result = filename.to_string();
 
         for operation in &self.config.operations {
-            result = self.apply_single_operation(&result, operation, seq_num);
+            result = self.apply_single_operation(&result, operation, index);
         }
 
         result
@@ -131,7 +160,7 @@ impl PreviewGenerator {
         &self,
         filename: &str,
         operation: &RenameOperation,
-        seq_num: u32,
+        index: usize,
     ) -> String {
         match operation {
             RenameOperation::FindReplace { find, replace, use_regex } => {
@@ -148,7 +177,7 @@ impl PreviewGenerator {
                 self.add_text(filename, text, position)
             }
             RenameOperation::Format { format, position, separator } => {
-                let formatted_text = self.format_text(format, seq_num);
+                let formatted_text = self.format_text(format, index);
                 let sep = match separator {
                     crate::models::FormatSeparator::None => "",
                     crate::models::FormatSeparator::Underscore => "_",
@@ -190,16 +219,18 @@ impl PreviewGenerator {
     }
 
     /// Format text according to the format type
-    fn format_text(&self, format: &FormatType, seq_num: u32) -> String {
+    ///
+    /// `index` is the zero-based position of the file within the batch, so
+    /// format counters increment correctly regardless of the leading number
+    /// position (Start or End).
+    fn format_text(&self, format: &FormatType, index: usize) -> String {
         match format {
             FormatType::Sequential { start, increment } => {
-                let file_index = seq_num - self.config.starting_number;
-                let value = start + (file_index * increment);
+                let value = start + (index as u32 * increment);
                 format!("{:04}", value)
             }
             FormatType::Counter { start, increment, padding } => {
-                let file_index = seq_num - self.config.starting_number;
-                let value = start + (file_index * increment);
+                let value = start + (index as u32 * increment);
                 let width = *padding as usize;
                 format!("{:0>width$}", value, width = width)
             }
@@ -234,6 +265,18 @@ impl PreviewGenerator {
                 (PreviewStatus::Error, check_path_length(new_path).message())
             }
         }
+    }
+}
+
+/// Insert text into a filename immediately before its extension.
+///
+/// If the filename has no extension the text is appended to the end.
+fn insert_before_extension(filename: &str, insert: &str) -> String {
+    if let Some(dot) = filename.rfind('.') {
+        let (stem, ext) = filename.split_at(dot);
+        format!("{}{}{}", stem, insert, ext)
+    } else {
+        format!("{}{}", filename, insert)
     }
 }
 
@@ -318,10 +361,12 @@ mod tests {
             starting_number: 1,
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
 
         let generator = PreviewGenerator::new(config, OperatingSystem::current());
-        let result = generator.construct_target_name("video.mp4", 1);
+        let result = generator.construct_target_name("video.mp4", 0);
 
         assert_eq!(result, "BB_0001_video.mp4");
     }
@@ -333,10 +378,12 @@ mod tests {
             starting_number: 42,
             additional_text: Some("DailyRush".to_string()),
             operations: vec![],
+        
+            ..Default::default()
         };
 
         let generator = PreviewGenerator::new(config, OperatingSystem::current());
-        let result = generator.construct_target_name("audio.wav", 42);
+        let result = generator.construct_target_name("audio.wav", 0);
 
         assert_eq!(result, "KCOC4_0042_DailyRush_audio.wav");
     }
@@ -348,10 +395,12 @@ mod tests {
             starting_number: 1,
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
 
         let generator = PreviewGenerator::new(config, OperatingSystem::current());
-        let result = generator.construct_target_name("README", 1);
+        let result = generator.construct_target_name("README", 0);
 
         assert_eq!(result, "DOC_0001_README");
     }
@@ -363,15 +412,15 @@ mod tests {
 
         // Test various extension cases
         assert_eq!(
-            generator.construct_target_name("video.MP4", 1),
+            generator.construct_target_name("video.MP4", 0),
             "BB_0001_video.MP4"
         );
         assert_eq!(
-            generator.construct_target_name("video.Mp4", 1),
+            generator.construct_target_name("video.Mp4", 0),
             "BB_0001_video.Mp4"
         );
         assert_eq!(
-            generator.construct_target_name("video.mp4", 1),
+            generator.construct_target_name("video.mp4", 0),
             "BB_0001_video.mp4"
         );
     }
@@ -381,17 +430,17 @@ mod tests {
         let config = RenameConfig::default();
         let generator = PreviewGenerator::new(config, OperatingSystem::current());
 
-        // Test various sequential numbers
+        // Leading number = starting_number (1) + batch index, zero-padded to 4 digits
         assert_eq!(
-            generator.construct_target_name("file.txt", 1),
+            generator.construct_target_name("file.txt", 0),
             "BB_0001_file.txt"
         );
         assert_eq!(
-            generator.construct_target_name("file.txt", 99),
+            generator.construct_target_name("file.txt", 98),
             "BB_0099_file.txt"
         );
         assert_eq!(
-            generator.construct_target_name("file.txt", 9999),
+            generator.construct_target_name("file.txt", 9998),
             "BB_9999_file.txt"
         );
     }
@@ -407,6 +456,8 @@ mod tests {
                 replace: "new".to_string(),
                 use_regex: false,
             }],
+        
+            ..Default::default()
         };
 
         let generator = PreviewGenerator::new(config, OperatingSystem::current());
@@ -425,6 +476,8 @@ mod tests {
                 text: "prefix_".to_string(),
                 position: TextPosition::Before,
             }],
+        
+            ..Default::default()
         };
 
         let generator = PreviewGenerator::new(config, OperatingSystem::current());
@@ -443,6 +496,8 @@ mod tests {
                 text: "_suffix".to_string(),
                 position: TextPosition::After,
             }],
+        
+            ..Default::default()
         };
 
         let generator = PreviewGenerator::new(config, OperatingSystem::current());
@@ -461,6 +516,8 @@ mod tests {
                 text: "_suffix".to_string(),
                 position: TextPosition::After,
             }],
+        
+            ..Default::default()
         };
 
         let generator = PreviewGenerator::new(config, OperatingSystem::current());
@@ -483,18 +540,20 @@ mod tests {
                 position: TextPosition::Before,
                 separator: crate::models::FormatSeparator::None,
             }],
+        
+            ..Default::default()
         };
 
         let generator = PreviewGenerator::new(config, OperatingSystem::current());
 
-        // First file (seq_num = 1): 100 + (1-1)*5 = 100
-        assert_eq!(generator.apply_operations("file.txt", 1), "0100file.txt");
+        // First file (index = 0): 100 + 0*5 = 100
+        assert_eq!(generator.apply_operations("file.txt", 0), "0100file.txt");
 
-        // Second file (seq_num = 2): 100 + (2-1)*5 = 105
-        assert_eq!(generator.apply_operations("file.txt", 2), "0105file.txt");
+        // Second file (index = 1): 100 + 1*5 = 105
+        assert_eq!(generator.apply_operations("file.txt", 1), "0105file.txt");
 
-        // Third file (seq_num = 3): 100 + (3-1)*5 = 110
-        assert_eq!(generator.apply_operations("file.txt", 3), "0110file.txt");
+        // Third file (index = 2): 100 + 2*5 = 110
+        assert_eq!(generator.apply_operations("file.txt", 2), "0110file.txt");
     }
 
     #[test]
@@ -510,6 +569,8 @@ mod tests {
                 position: TextPosition::Before,
                 separator: crate::models::FormatSeparator::None,
             }],
+        
+            ..Default::default()
         };
 
         let generator = PreviewGenerator::new(config, OperatingSystem::current());
@@ -539,6 +600,8 @@ mod tests {
                     position: TextPosition::Before,
                 },
             ],
+        
+            ..Default::default()
         };
 
         let generator = PreviewGenerator::new(config, OperatingSystem::current());
@@ -556,6 +619,8 @@ mod tests {
             starting_number: 5,
             additional_text: None,
             operations: vec![],
+        
+            ..Default::default()
         };
 
         let files = vec![
@@ -583,5 +648,89 @@ mod tests {
 
         assert_eq!(previews[0].original_name, "original.txt");
         assert_eq!(previews[0].original_path, "/test/original.txt");
+    }
+
+    // ── Number position: End (fixed leading number, incrementing trailing counter) ──
+
+    #[test]
+    fn test_number_position_end_keeps_leading_number_fixed() {
+        // Reproduces the requested behaviour:
+        //   BFR_0001_STILL_..._01, BFR_0001_STILL_..._02
+        // instead of incrementing the leading number.
+        let config = RenameConfig {
+            prefix: "BFR".to_string(),
+            starting_number: 1,
+            additional_text: Some("STILL".to_string()),
+            number_position: NumberPosition::End,
+            end_number_start: 1,
+            end_number_padding: 2,
+            operations: vec![],
+        };
+
+        let files = vec![
+            create_test_file("shot.mov", "/test/shot.mov"),
+            create_test_file("clip.mov", "/test/clip.mov"),
+            create_test_file("take.mov", "/test/take.mov"),
+        ];
+
+        let generator = PreviewGenerator::new(config, OperatingSystem::current());
+        let previews = generator.generate_preview(&files);
+
+        // Leading number stays 0001; trailing counter increments 01, 02, 03
+        assert_eq!(previews[0].new_name, "BFR_0001_STILL_shot_01.mov");
+        assert_eq!(previews[1].new_name, "BFR_0001_STILL_clip_02.mov");
+        assert_eq!(previews[2].new_name, "BFR_0001_STILL_take_03.mov");
+    }
+
+    #[test]
+    fn test_number_position_end_without_additional_text() {
+        let config = RenameConfig {
+            prefix: "BFR".to_string(),
+            starting_number: 7,
+            additional_text: None,
+            number_position: NumberPosition::End,
+            end_number_start: 1,
+            end_number_padding: 2,
+            operations: vec![],
+        };
+
+        let generator = PreviewGenerator::new(config, OperatingSystem::current());
+
+        // Leading number fixed at 0007; trailing counter appended before extension
+        assert_eq!(generator.construct_target_name("a.txt", 0), "BFR_0007_a_01.txt");
+        assert_eq!(generator.construct_target_name("a.txt", 1), "BFR_0007_a_02.txt");
+    }
+
+    #[test]
+    fn test_number_position_end_no_extension_appends_counter() {
+        let config = RenameConfig {
+            prefix: "BFR".to_string(),
+            starting_number: 1,
+            additional_text: None,
+            number_position: NumberPosition::End,
+            end_number_start: 1,
+            end_number_padding: 2,
+            operations: vec![],
+        };
+
+        let generator = PreviewGenerator::new(config, OperatingSystem::current());
+        assert_eq!(generator.construct_target_name("README", 4), "BFR_0001_README_05");
+    }
+
+    #[test]
+    fn test_number_position_end_custom_start_and_padding() {
+        let config = RenameConfig {
+            prefix: "BFR".to_string(),
+            starting_number: 1,
+            additional_text: None,
+            number_position: NumberPosition::End,
+            end_number_start: 10,
+            end_number_padding: 4,
+            operations: vec![],
+        };
+
+        let generator = PreviewGenerator::new(config, OperatingSystem::current());
+        assert_eq!(generator.construct_target_name("a.txt", 0), "BFR_0001_a_0010.txt");
+        assert_eq!(generator.construct_target_name("a.txt", 2), "BFR_0001_a_0012.txt");
     }
 }

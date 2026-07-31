@@ -17,10 +17,31 @@ pub struct RenameConfig {
     
     /// Optional text inserted between sequential number and original filename
     pub additional_text: Option<String>,
-    
+
+    /// Where the incrementing sequence number is placed.
+    ///
+    /// * `Start` (default): the number after the prefix increments per file
+    ///   (e.g. `BFR_0001_...`, `BFR_0002_...`).
+    /// * `End`: the number after the prefix stays fixed at `starting_number`
+    ///   for every file, and an incrementing counter is appended to the end of
+    ///   each filename (e.g. `BFR_0001_..._01`, `BFR_0001_..._02`).
+    #[serde(default)]
+    pub number_position: NumberPosition,
+
+    /// Starting value for the appended counter when `number_position` is `End`.
+    #[serde(default = "default_end_number_start")]
+    pub end_number_start: u32,
+
+    /// Zero-padding width for the appended counter when `number_position` is `End`.
+    #[serde(default = "default_end_number_padding")]
+    pub end_number_padding: u32,
+
     /// List of rename operations to apply (for Requirement 12)
     pub operations: Vec<RenameOperation>,
 }
+
+fn default_end_number_start() -> u32 { 1 }
+fn default_end_number_padding() -> u32 { 2 }
 
 impl Default for RenameConfig {
     fn default() -> Self {
@@ -28,9 +49,25 @@ impl Default for RenameConfig {
             prefix: "BB".to_string(),
             starting_number: 1,
             additional_text: None,
+            number_position: NumberPosition::Start,
+            end_number_start: default_end_number_start(),
+            end_number_padding: default_end_number_padding(),
             operations: Vec::new(),
         }
     }
+}
+
+/// Position of the incrementing sequence number in the generated filename
+///
+/// Validates: Requirement 4 (numbering scheme)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NumberPosition {
+    /// Increment the number that follows the prefix (default behaviour)
+    #[default]
+    Start,
+    /// Keep the leading number fixed and append an incrementing counter to the end
+    End,
 }
 
 /// Metadata about a file to be renamed
@@ -246,6 +283,8 @@ mod tests {
             starting_number: 42,
             additional_text: Some("Scene1".to_string()),
             operations: vec![],
+        
+            ..Default::default()
         };
         
         let json = serde_json::to_string(&config).unwrap();

@@ -167,8 +167,7 @@ pub async fn execute_batch_rename(
         };
         let _ = window.emit("rename-progress", &progress);
         
-        let seq_num = renamer.config.starting_number + index as u32;
-        let result = renamer.rename_single(file, seq_num);
+        let result = renamer.rename_single(file, index);
         if result.success {
             undo_entries.push((result.new_path.clone(), file.path.clone()));
         }

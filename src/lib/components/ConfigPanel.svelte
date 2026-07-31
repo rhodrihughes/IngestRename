@@ -7,6 +7,7 @@
     FormatSeparator,
     TextPosition,
     CaseType,
+    NumberPosition,
     Preset,
   } from '$lib/types';
   import { validatePrefix, validateStartingNumber } from '$lib/types';
@@ -17,6 +18,9 @@
     prefix: 'BFR',
     startingNumber: 1,
     additionalText: undefined,
+    numberPosition: 'start',
+    endNumberStart: 1,
+    endNumberPadding: 2,
     operations: [],
   };
 
@@ -69,6 +73,23 @@
   function onAdditionalTextInput(e: Event) {
     additionalTextValue = (e.target as HTMLInputElement).value;
     config.additionalText = additionalTextValue.trim() === '' ? undefined : additionalTextValue;
+    validateAndDispatch();
+  }
+
+  function onNumberPositionChange(e: Event) {
+    config.numberPosition = (e.target as HTMLSelectElement).value as NumberPosition;
+    validateAndDispatch();
+  }
+
+  function onEndNumberStartInput(e: Event) {
+    const parsed = parseInt((e.target as HTMLInputElement).value, 10);
+    config.endNumberStart = isNaN(parsed) ? 1 : parsed;
+    validateAndDispatch();
+  }
+
+  function onEndNumberPaddingInput(e: Event) {
+    const parsed = parseInt((e.target as HTMLInputElement).value, 10);
+    config.endNumberPadding = isNaN(parsed) ? 2 : parsed;
     validateAndDispatch();
   }
 
@@ -244,6 +265,57 @@
       />
       <p class="hint">Inserted between the sequential number and the original filename.</p>
     </div>
+
+    <!-- Number Position -->
+    <div class="field">
+      <label class="label" for="number-position">Number position</label>
+      <select
+        id="number-position"
+        class="select"
+        value={config.numberPosition ?? 'start'}
+        on:change={onNumberPositionChange}
+      >
+        <option value="start">Start — number after prefix increments (BFR_0001, BFR_0002)</option>
+        <option value="end">End — prefix number stays fixed, counter appended (BFR_0001…_01, BFR_0001…_02)</option>
+      </select>
+      <p class="hint">
+        Choose "End" to keep the same starting number on every file and increment a
+        counter added to the end of each filename instead.
+      </p>
+    </div>
+
+    {#if (config.numberPosition ?? 'start') === 'end'}
+      <!-- Appended counter start -->
+      <div class="field">
+        <label class="label" for="end-number-start">Appended counter start</label>
+        <input
+          id="end-number-start"
+          class="input"
+          type="number"
+          min="0"
+          max="9999"
+          step="1"
+          value={config.endNumberStart ?? 1}
+          on:input={onEndNumberStartInput}
+        />
+      </div>
+
+      <!-- Appended counter digits -->
+      <div class="field">
+        <label class="label" for="end-number-padding">Appended counter digits</label>
+        <input
+          id="end-number-padding"
+          class="input"
+          type="number"
+          min="1"
+          max="10"
+          step="1"
+          value={config.endNumberPadding ?? 2}
+          on:input={onEndNumberPaddingInput}
+        />
+        <p class="hint">Zero-padding width for the appended counter (e.g. 2 → 01, 02).</p>
+      </div>
+    {/if}
   </section>
 
   <!-- -----------------------------------------------------------------------
