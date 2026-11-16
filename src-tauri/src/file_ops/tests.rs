@@ -446,3 +446,54 @@ mod property_tests {
         }
     }
 }
+
+#[test]
+fn test_stat_path_and_exists() {
+    let dir = TempDir::new().unwrap();
+    let file_path = dir.path().join("clip.mov");
+    File::create(&file_path).unwrap();
+
+    assert!(stat_path(&file_path).unwrap().is_file());
+    assert!(path_exists(&file_path));
+    assert!(!path_exists(&dir.path().join("missing.mov")));
+}
+
+#[test]
+fn test_rename_file_never_replaces_existing() {
+    let dir = TempDir::new().unwrap();
+    let old_path = create_test_file(dir.path(), "a.mov", "source");
+    let new_path = create_test_file(dir.path(), "b.mov", "keep me");
+
+    let err = rename_file(&old_path, &new_path).unwrap_err();
+
+    assert!(matches!(err, FileError::AlreadyExists(_)));
+    assert_eq!(fs::read_to_string(&new_path).unwrap(), "keep me");
+    assert!(old_path.exists());
+}
+
+#[test]
+fn test_rename_file_overwrite_replaces_existing() {
+    let dir = TempDir::new().unwrap();
+    let old_path = create_test_file(dir.path(), "a.mov", "source");
+    let new_path = create_test_file(dir.path(), "b.mov", "old");
+
+    rename_file_overwrite(&old_path, &new_path).unwrap();
+
+    assert_eq!(fs::read_to_string(&new_path).unwrap(), "source");
+    assert!(!old_path.exists());
+}
+
+#[test]
+fn test_rename_file_case_only_change() {
+    let dir = TempDir::new().unwrap();
+    let old_path = create_test_file(dir.path(), "clip.mov", "x");
+    let new_path = dir.path().join("CLIP.mov");
+
+    rename_file(&old_path, &new_path).unwrap();
+
+    let names: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(names, vec!["CLIP.mov".to_string()]);
+}

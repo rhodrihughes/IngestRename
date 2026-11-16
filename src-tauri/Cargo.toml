@@ -29,6 +29,12 @@ thiserror = "2"
 chrono = "0.4"
 regex = "1"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"

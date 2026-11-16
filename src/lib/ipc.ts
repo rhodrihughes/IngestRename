@@ -146,17 +146,20 @@ export async function validateConfig(
  * 
  * @param files - List of files to rename
  * @param config - Rename configuration
+ * @param overwrite - Original paths of files allowed to replace an existing file
  * @returns Promise resolving to array of rename results
  * @throws IPCError if the command fails or configuration is invalid
  */
 export async function executeBatchRename(
   files: FileInfo[],
-  config: RenameConfig
+  config: RenameConfig,
+  overwrite: string[] = []
 ): Promise<BatchRenameResponse> {
   try {
     const result = await invoke<BatchRenameResponse>('execute_batch_rename', {
       files,
       config,
+      overwrite,
     });
     return result;
   } catch (error) {
@@ -202,6 +205,7 @@ export async function onRenameProgress(
  * @param files - List of files to rename
  * @param config - Rename configuration
  * @param onProgress - Optional callback for progress updates
+ * @param overwrite - Original paths of files allowed to replace an existing file
  * @returns Promise resolving to array of rename results
  * @throws IPCError if the command fails or configuration is invalid
  * 
@@ -219,7 +223,8 @@ export async function onRenameProgress(
 export async function executeBatchRenameWithProgress(
   files: FileInfo[],
   config: RenameConfig,
-  onProgress?: (event: ProgressEvent) => void
+  onProgress?: (event: ProgressEvent) => void,
+  overwrite: string[] = []
 ): Promise<BatchRenameResponse> {
   let unlisten: UnlistenFn | undefined;
   
@@ -227,7 +232,7 @@ export async function executeBatchRenameWithProgress(
     if (onProgress) {
       unlisten = await onRenameProgress(onProgress);
     }
-    const result = await executeBatchRename(files, config);
+    const result = await executeBatchRename(files, config, overwrite);
     return result;
   } finally {
     if (unlisten) {

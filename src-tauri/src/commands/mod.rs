@@ -161,6 +161,7 @@ pub struct BatchRenameResponse {
 pub async fn execute_batch_rename(
     files: Vec<FileMetadata>,
     config: RenameConfig,
+    overwrite: Option<Vec<String>>,
     window: tauri::Window,
 ) -> Result<BatchRenameResponse, String> {
     // Validate configuration first
@@ -170,7 +171,9 @@ pub async fn execute_batch_rename(
     }
     
     let os = OperatingSystem::current();
-    let renamer = BatchRenamer::new(config, os);
+    let mut renamer = BatchRenamer::new(config, os);
+    // Original paths of files the user agreed may replace an existing file
+    renamer.overwrite = overwrite.unwrap_or_default().into_iter().collect();
     
     let total = files.len();
     let mut results = Vec::new();

@@ -1700,6 +1700,7 @@ name = "ingestrename"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "proptest",
  "regex",
  "serde",
@@ -1712,6 +1713,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

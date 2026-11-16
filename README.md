@@ -156,8 +156,8 @@ The preview table shows original and new filenames side by side. Use the copy ic
 
 ## Troubleshooting
 
-**"File already exists" error**
-The target filename already exists in the same directory. The file is skipped and the rest of the batch continues. Rename or move the conflicting file, then re-run for the skipped files.
+**"Name already taken" / "File already exists"**
+A new name is already used by another file in the same folder. When you click Rename, the app asks whether to **Overwrite** those files (they are replaced for good and Undo can't restore them), **Skip** those files and rename the rest, or **Cancel**. Skipped files are listed as "File already exists". Two files in the list can't get the same new name, and a file can't take the current name of another file in the list. Both show as errors until you change the rules.
 
 **"Permission denied" error**
 The app doesn't have write access to the file or its directory. Check that the file isn't open in another application and that you have write permissions for the folder.

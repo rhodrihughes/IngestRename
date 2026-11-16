@@ -167,7 +167,7 @@ pub fn validate_path_length(path: &Path, os: OperatingSystem) -> Result<(), Vali
 /// * `true` if the file exists
 /// * `false` if the file does not exist
 pub fn check_file_exists(path: &Path) -> bool {
-    path.exists()
+    crate::file_ops::path_exists(path)
 }
 
 /// Check if the current process has permissions to rename a file
@@ -182,14 +182,14 @@ pub fn check_file_exists(path: &Path) -> bool {
 /// * `Err(ValidationError)` if there are permission issues or the file doesn't exist
 pub fn check_file_permissions(path: &Path) -> Result<(), ValidationError> {
     // First check if the file exists
-    if !path.exists() {
+    if !crate::file_ops::path_exists(path) {
         return Err(ValidationError::FileNotFound(
             path.to_string_lossy().to_string()
         ));
     }
     
     // Check if we can read the file metadata (basic permission check)
-    match std::fs::metadata(path) {
+    match crate::file_ops::stat_path(path) {
         Ok(metadata) => {
             // Check if the file is read-only on Windows
             #[cfg(target_os = "windows")]

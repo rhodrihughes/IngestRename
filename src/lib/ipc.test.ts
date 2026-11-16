@@ -193,6 +193,7 @@ describe('IPC Wrapper Functions', () => {
       expect(invoke).toHaveBeenCalledWith('execute_batch_rename', {
         files: mockFiles,
         config: mockConfig,
+        overwrite: [],
       });
       expect(result).toEqual(mockResults);
     });
@@ -309,6 +310,7 @@ describe('IPC Wrapper Functions', () => {
       expect(invoke).toHaveBeenCalledWith('execute_batch_rename', {
         files: mockFiles,
         config: mockConfig,
+        overwrite: [],
       });
       expect(result).toEqual(mockResults);
       expect(mockUnlisten).toHaveBeenCalled();

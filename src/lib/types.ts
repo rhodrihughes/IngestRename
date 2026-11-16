@@ -153,6 +153,8 @@ export interface PreviewResult {
   
   /** Optional message explaining warnings or errors */
   message?: string;
+  /** A different file already has the new name; renaming would overwrite it */
+  targetExists?: boolean;
 }
 
 /**

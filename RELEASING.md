@@ -17,8 +17,8 @@ Pushing a `v*` tag triggers `.github/workflows/build.yml`, which builds the Wind
 3. Tag and push the tag:
 
    ```bash
-   git tag v1.4.2
-   git push origin v1.4.2
+   git tag v1.4.1
+   git push origin v1.4.1
    ```
 
 4. Watch the build in the repository's **Actions** tab. When it finishes, the release appears under **Releases**.

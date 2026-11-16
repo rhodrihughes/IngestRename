@@ -2,6 +2,7 @@
 //
 // Validates: Requirements 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 5.1, 12.1-12.10
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use chrono::Local;
 use regex::Regex;
@@ -40,11 +41,51 @@ impl PreviewGenerator {
     /// # Returns
     /// * Vector of preview results showing original and target names
     pub fn generate_preview(&self, files: &[FileMetadata]) -> Vec<PreviewResult> {
-        files
+        let previews = files
             .iter()
             .enumerate()
             .map(|(index, file)| self.generate_single_preview(file, index))
-            .collect()
+            .collect();
+        self.flag_batch_conflicts(previews)
+    }
+
+    /// Mark clashes between files in the same batch as errors. These can't be
+    /// resolved by overwriting: two files sharing a new name would lose one of
+    /// them, and taking the current name of another file in the batch would
+    /// destroy that file before it is renamed.
+    fn flag_batch_conflicts(&self, mut previews: Vec<PreviewResult>) -> Vec<PreviewResult> {
+        let originals: HashSet<String> =
+            previews.iter().map(|p| self.path_key(&p.original_path)).collect();
+        let mut target_counts: HashMap<String, usize> = HashMap::new();
+        for p in &previews {
+            *target_counts.entry(self.path_key(&p.new_path)).or_default() += 1;
+        }
+
+        for p in &mut previews {
+            if p.status == PreviewStatus::Error {
+                continue;
+            }
+            let target = self.path_key(&p.new_path);
+            let message = if target_counts[&target] > 1 {
+                "Another file in this list gets the same new name"
+            } else if target != self.path_key(&p.original_path) && originals.contains(&target) {
+                "Another file in this list currently has this name"
+            } else {
+                continue;
+            };
+            p.status = PreviewStatus::Error;
+            p.message = Some(message.to_string());
+            p.target_exists = false;
+        }
+        previews
+    }
+
+    /// Comparable form of a path: Windows and macOS file names ignore case.
+    fn path_key(&self, path: &str) -> String {
+        match self.os {
+            OperatingSystem::Windows | OperatingSystem::MacOS => path.to_lowercase(),
+            OperatingSystem::Unix => path.to_string(),
+        }
     }
 
     /// Generate the preview for a single file at a given position in the batch.
@@ -68,7 +109,7 @@ impl PreviewGenerator {
         let new_path = parent.join(&new_name);
 
         // Check for issues
-        let (status, message) = self.check_preview_status(&new_path);
+        let (status, message, target_exists) = self.check_preview_status(&new_path, original_path);
 
         PreviewResult {
             original_path: file.path.clone(),
@@ -77,6 +118,7 @@ impl PreviewGenerator {
             new_path: new_path.to_string_lossy().to_string(),
             status,
             message,
+            target_exists,
         }
     }
 
@@ -276,27 +318,33 @@ impl PreviewGenerator {
     }
 
     /// Check the status of a preview (valid, warning, or error)
-    fn check_preview_status(&self, new_path: &Path) -> (PreviewStatus, Option<String>) {
-        // Check if target file already exists
-        if check_file_exists(new_path) {
+    ///
+    /// Returns the status, an optional message, and whether a different file
+    /// already has the new name (the user is asked before overwriting it).
+    fn check_preview_status(
+        &self,
+        new_path: &Path,
+        original_path: &Path,
+    ) -> (PreviewStatus, Option<String>, bool) {
+        let length = check_path_length(new_path);
+        if let PathLengthCheck::TooLong { .. } = length {
+            return (PreviewStatus::Error, length.message(), false);
+        }
+
+        // The file's own current name (or a case-only change of it) isn't a clash
+        let same_file = self.path_key(&new_path.to_string_lossy())
+            == self.path_key(&original_path.to_string_lossy());
+        if !same_file && check_file_exists(new_path) {
             return (
-                PreviewStatus::Error,
-                Some(format!(
-                    "A file with the name '{}' already exists",
-                    new_path.file_name().unwrap_or_default().to_string_lossy()
-                )),
+                PreviewStatus::Warning,
+                Some("Name already taken. You'll be asked before overwriting".to_string()),
+                true,
             );
         }
 
-        // Check path length
-        match check_path_length(new_path) {
-            PathLengthCheck::Ok => (PreviewStatus::Valid, None),
-            PathLengthCheck::Warning { .. } => {
-                (PreviewStatus::Warning, check_path_length(new_path).message())
-            }
-            PathLengthCheck::TooLong { .. } => {
-                (PreviewStatus::Error, check_path_length(new_path).message())
-            }
+        match length {
+            PathLengthCheck::Warning { .. } => (PreviewStatus::Warning, length.message(), false),
+            _ => (PreviewStatus::Valid, None, false),
         }
     }
 }
@@ -377,6 +425,57 @@ fn translate_date_format(fmt: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn file_at(dir: &Path, name: &str) -> FileMetadata {
+        create_test_file(name, &dir.join(name).to_string_lossy())
+    }
+
+    #[test]
+    fn test_existing_target_outside_batch_is_overwrite_warning() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("x.mov"), b"src").unwrap();
+        std::fs::write(dir.path().join("BB_0001_x.mov"), b"other").unwrap();
+        let generator = PreviewGenerator::new(RenameConfig::default(), OperatingSystem::current());
+
+        let previews = generator.generate_preview(&[file_at(dir.path(), "x.mov")]);
+
+        assert_eq!(previews[0].status, PreviewStatus::Warning);
+        assert!(previews[0].target_exists);
+    }
+
+    #[test]
+    fn test_target_is_another_file_in_batch_is_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let generator = PreviewGenerator::new(RenameConfig::default(), OperatingSystem::current());
+        // x.mov -> BB_0001_x.mov, which is the current name of the second file
+        let files = [file_at(dir.path(), "x.mov"), file_at(dir.path(), "BB_0001_x.mov")];
+
+        let previews = generator.generate_preview(&files);
+
+        assert_eq!(previews[0].status, PreviewStatus::Error);
+        assert!(!previews[0].target_exists);
+    }
+
+    #[test]
+    fn test_duplicate_new_names_in_batch_are_errors() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = RenameConfig {
+            use_number: false,
+            operations: vec![RenameOperation::FindReplace {
+                find: "^[ab]".to_string(),
+                replace: "c".to_string(),
+                use_regex: true,
+            }],
+            ..Default::default()
+        };
+        let generator = PreviewGenerator::new(config, OperatingSystem::current());
+        let files = [file_at(dir.path(), "a.mov"), file_at(dir.path(), "b.mov")];
+
+        let previews = generator.generate_preview(&files);
+
+        assert_eq!(previews[0].new_name, previews[1].new_name);
+        assert!(previews.iter().all(|p| p.status == PreviewStatus::Error));
+    }
 
     fn create_test_file(name: &str, path: &str) -> FileMetadata {
         FileMetadata {

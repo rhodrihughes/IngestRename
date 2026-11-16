@@ -24,7 +24,7 @@
   } from '$lib/ipc';
   import { sortFiles, type SortMode } from '$lib/files';
   import { createDefaultConfig } from '$lib/types';
-  import type { FileInfo, RenameConfig, UndoRecord } from '$lib/types';
+  import type { FileInfo, PreviewResult, RenameConfig, UndoRecord } from '$lib/types';
 
   // Local reactive state bound to child components
   let localFiles = $state<FileInfo[]>([]);
@@ -35,6 +35,9 @@
   let skipped = $state<Set<string>>(new Set());
   let sortMode = $state<SortMode>('selection');
   let dragging = $state(false);
+  // Files whose new name is already taken, while the overwrite prompt is open
+  let overwritePrompt = $state<PreviewResult[] | undefined>(undefined);
+  let overwriteCancelButton: HTMLButtonElement | undefined = $state();
   // Preset currently applied (shown in the Presets menu button)
   let activePreset = $state<string | null>(null);
   // Bumped whenever the config is replaced from outside (startup, preset load)
@@ -56,6 +59,13 @@
     $operationStatus.total > 0
       ? Math.round(($operationStatus.progress / $operationStatus.total) * 100)
       : 0
+  );
+  const canClear = $derived(
+    !isRunning && (localFiles.length > 0 || $operationStatus.results.length > 0)
+  );
+  // New names already used by a file outside this batch
+  const overwriteConflicts = $derived(
+    $previewResults.filter((r) => r.targetExists && !skipped.has(r.originalPath))
   );
   const examplePreview = $derived($previewResults[0]);
 
@@ -178,9 +188,13 @@
     localFiles = localFiles.filter((f) => f.path !== path);
   }
 
-  function clearFiles() {
+  // Empty the queue and drop the results (including failures) of the last rename.
+  // The undo record is kept so a rename can still be undone after clearing.
+  function clearAll() {
     localFiles = [];
     skipped = new Set();
+    previewError = undefined;
+    operationStatus.set({ state: 'idle', progress: 0, total: 0, results: [] });
   }
 
   function onConfigChange(event: CustomEvent<RenameConfig>) {
@@ -202,7 +216,29 @@
     toastTimer = setTimeout(() => (toast = undefined), undo ? 15000 : 4000);
   }
 
-  async function onExecute() {
+  // Ask before overwriting when any new name is already taken
+  function onExecute() {
+    if (!canRename || overwritePrompt) return;
+    if (overwriteConflicts.length > 0) {
+      overwritePrompt = overwriteConflicts;
+      return;
+    }
+    runRename([]);
+  }
+
+  // "Skip" renames everything else; the taken names fail safely and are listed as not renamed
+  function resolveOverwrite(choice: 'overwrite' | 'skip' | 'cancel') {
+    const conflicts = overwritePrompt ?? [];
+    overwritePrompt = undefined;
+    if (choice === 'cancel') return;
+    runRename(choice === 'overwrite' ? conflicts.map((c) => c.originalPath) : []);
+  }
+
+  $effect(() => {
+    if (overwritePrompt) overwriteCancelButton?.focus();
+  });
+
+  async function runRename(overwrite: string[]) {
     if (!canRename) return;
     const files = $state.snapshot(activeFiles) as FileInfo[];
     const cfg = $state.snapshot(localConfig) as RenameConfig;
@@ -212,13 +248,18 @@
     toast = undefined;
 
     try {
-      const response = await executeBatchRenameWithProgress(files, cfg, (event) => {
-        operationStatus.update((s) => ({
-          ...s,
-          progress: event.current,
-          total: event.total,
-        }));
-      });
+      const response = await executeBatchRenameWithProgress(
+        files,
+        cfg,
+        (event) => {
+          operationStatus.update((s) => ({
+            ...s,
+            progress: event.current,
+            total: event.total,
+          }));
+        },
+        overwrite
+      );
 
       const { results, undoRecord } = response;
       const hasErrors = results.some((r) => !r.success);
@@ -270,6 +311,13 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
+    if (overwritePrompt) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        resolveOverwrite('cancel');
+      }
+      return;
+    }
     const mod = e.metaKey || e.ctrlKey;
     if (!mod) return;
     const inField = (e.target as HTMLElement)?.matches?.('input, textarea, select');
@@ -295,6 +343,7 @@
     <div class="header-actions">
       <a href="/info" class="info-link" aria-label="Regex quick guide">Regex guide ↗</a>
       <PresetMenu config={localConfig} bind:activeName={activePreset} on:load={(e) => replaceConfig(e.detail)} />
+      <button class="btn" type="button" onclick={clearAll} disabled={!canClear} title="Clear the file list and rename results">Clear</button>
       <FileSelector bind:this={fileSelector} bind:selectedFiles={localFiles} />
     </div>
   </header>
@@ -366,12 +415,40 @@
           <span>{activeFiles.length} of {localFiles.length} files will be renamed</span>
         {/if}
       </div>
-      <button class="btn" type="button" onclick={clearFiles} disabled={localFiles.length === 0 || isRunning}>Clear</button>
       <button class="btn btn-primary" type="button" onclick={onExecute} disabled={!canRename} title="⌘Enter">
         Rename{activeFiles.length > 0 ? ` ${activeFiles.length}` : ''}
       </button>
     </footer>
   </main>
+
+  <!-- ── Overwrite prompt ────────────────────────────────────────────── -->
+  {#if overwritePrompt}
+    {@const count = overwritePrompt.length}
+    <div class="modal-backdrop">
+      <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="overwrite-title" aria-describedby="overwrite-desc">
+        <h2 id="overwrite-title" class="modal-title">
+          Overwrite {count} existing file{count === 1 ? '' : 's'}?
+        </h2>
+        <p id="overwrite-desc" class="modal-text">
+          {count === 1 ? 'This name is' : 'These names are'} already used by another file in the same folder.
+          Overwriting replaces {count === 1 ? 'that file' : 'those files'} for good. Undo can't bring {count === 1 ? 'it' : 'them'} back.
+        </p>
+        <ul class="modal-list">
+          {#each overwritePrompt.slice(0, 8) as c (c.originalPath)}
+            <li><code>{c.newName}</code></li>
+          {/each}
+          {#if count > 8}
+            <li class="muted">…and {count - 8} more</li>
+          {/if}
+        </ul>
+        <div class="modal-actions">
+          <button class="btn" type="button" bind:this={overwriteCancelButton} onclick={() => resolveOverwrite('cancel')}>Cancel</button>
+          <button class="btn" type="button" onclick={() => resolveOverwrite('skip')}>Skip {count === 1 ? 'this file' : 'these files'}</button>
+          <button class="btn btn-danger" type="button" onclick={() => resolveOverwrite('overwrite')}>Overwrite</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <!-- ── Toast ───────────────────────────────────────────────────────────── -->
   {#if toast}
@@ -584,6 +661,68 @@
     background-color: #4338ca;
   }
 
+  /* ── Overwrite prompt ────────────────────────────────────────────── */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(17, 24, 39, 0.45);
+    z-index: 50;
+  }
+
+  .modal {
+    width: min(28rem, calc(100vw - 2rem));
+    padding: 1.25rem;
+    background-color: #fff;
+    border-radius: 0.5rem;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+  }
+
+  .modal-title {
+    margin: 0 0 0.5rem;
+    font-size: 1rem;
+    font-weight: 600;
+    color: #111827;
+  }
+
+  .modal-text {
+    margin: 0 0 0.75rem;
+    font-size: 0.875rem;
+    color: #374151;
+  }
+
+  .modal-list {
+    margin: 0 0 1rem;
+    padding-left: 1.25rem;
+    max-height: 10rem;
+    overflow-y: auto;
+    font-size: 0.8125rem;
+    color: #111827;
+  }
+
+  .modal-list .muted {
+    color: #6b7280;
+  }
+
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+  }
+
+  .btn-danger {
+    background-color: #dc2626;
+    border-color: #dc2626;
+    color: #fff;
+    font-weight: 600;
+  }
+
+  .btn-danger:hover {
+    background-color: #b91c1c;
+  }
+
   /* ── Toast ───────────────────────────────────────────────────────────── */
   .toast {
     position: fixed;
@@ -680,6 +819,25 @@
 
     .toast-undo {
       color: #4f46e5;
+    }
+
+    .modal {
+      background-color: #1f2937;
+    }
+
+    .modal-title,
+    .modal-list {
+      color: #f9fafb;
+    }
+
+    .modal-text {
+      color: #d1d5db;
+    }
+
+    .btn-danger {
+      background-color: #dc2626;
+      border-color: #dc2626;
+      color: #fff;
     }
   }
 </style>

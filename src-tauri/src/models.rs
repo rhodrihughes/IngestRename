@@ -162,6 +162,10 @@ pub struct PreviewResult {
     
     /// Optional message explaining warnings or errors
     pub message: Option<String>,
+
+    /// A different file already has the new name; renaming would overwrite it
+    #[serde(default)]
+    pub target_exists: bool,
 }
 
 /// Status of a preview result
@@ -372,6 +376,7 @@ mod tests {
             new_path: "/test/BB_0001_old.txt".to_string(),
             status: PreviewStatus::Valid,
             message: None,
+            target_exists: false,
         };
         
         let json = serde_json::to_string(&preview).unwrap();

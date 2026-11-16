@@ -33,6 +33,46 @@ pub enum FileError {
 
 pub type FileResult<T> = Result<T, FileError>;
 
+/// Read metadata for a path without opening the file's contents.
+///
+/// Cloud-synced files (OneDrive "Files On-Demand" placeholders) are reparse
+/// points. `fs::metadata` follows them and can fail, or `Path::exists` can
+/// report false, for files that are online-only. `symlink_metadata` reads the
+/// attributes without following the reparse point, so nothing is downloaded.
+/// If that still fails (other than "not found"), the entry is read from its
+/// parent directory listing, which needs no open on the file at all.
+pub fn stat_path(path: &Path) -> io::Result<fs::Metadata> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                // A real symlink: report the target when it resolves
+                if let Ok(target) = fs::metadata(path) {
+                    return Ok(target);
+                }
+            }
+            Ok(meta)
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(e),
+        Err(e) => {
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                return Err(e);
+            };
+            let entries = fs::read_dir(parent).map_err(|_| io::Error::new(e.kind(), e.to_string()))?;
+            for entry in entries.flatten() {
+                if entry.file_name() == name {
+                    return entry.metadata();
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+/// True when something exists at `path`, without downloading cloud placeholders.
+pub fn path_exists(path: &Path) -> bool {
+    stat_path(path).is_ok()
+}
+
 /// Extract file metadata from a given path
 /// 
 /// Validates: Requirements 1.2, 4.2, 10.2
@@ -51,20 +91,12 @@ pub fn get_file_info(path: &Path) -> FileResult<FileMetadata> {
     // Normalize path for Windows long path support
     let normalized_path = normalize_path(path)?;
     
-    // Check if file exists
-    if !normalized_path.exists() {
-        return Err(FileError::NotFound(path.display().to_string()));
-    }
-    
-    // Get file metadata
-    let metadata = fs::metadata(&normalized_path).map_err(|e| {
-        if e.kind() == io::ErrorKind::PermissionDenied {
-            FileError::PermissionDenied(path.display().to_string())
-        } else {
-            FileError::IoError(e)
-        }
+    // Get file metadata (does not download OneDrive online-only files)
+    let metadata = stat_path(&normalized_path).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => FileError::NotFound(path.display().to_string()),
+        io::ErrorKind::PermissionDenied => FileError::PermissionDenied(path.display().to_string()),
+        _ => FileError::IoError(e),
     })?;
-    
     // Extract filename
     let name = normalized_path
         .file_name()
@@ -86,49 +118,124 @@ pub fn get_file_info(path: &Path) -> FileResult<FileMetadata> {
     })
 }
 
-/// Rename a file with proper error handling
-/// 
+/// Rename a file, refusing to replace an existing file at `new_path`
+///
 /// Validates: Requirements 6.1, 6.3, 7.1, 7.2
-/// 
-/// # Arguments
-/// * `old_path` - Current file path
-/// * `new_path` - Target file path
-/// 
-/// # Returns
-/// * `FileResult<()>` - Success or error
-/// 
+///
+/// The "already exists" check is enforced by the OS during the rename itself,
+/// so a file that appears at `new_path` after the check is still never replaced.
+///
 /// # Errors
 /// * `FileError::NotFound` - Source file does not exist
 /// * `FileError::AlreadyExists` - Target file already exists
 /// * `FileError::PermissionDenied` - Cannot rename file due to permissions
 pub fn rename_file(old_path: &Path, new_path: &Path) -> FileResult<()> {
+    rename_impl(old_path, new_path, false)
+}
+
+/// Rename a file, replacing any existing file at `new_path`.
+///
+/// The replaced file is permanently removed. Only call this after the user
+/// has agreed to overwrite that specific file.
+pub fn rename_file_overwrite(old_path: &Path, new_path: &Path) -> FileResult<()> {
+    rename_impl(old_path, new_path, true)
+}
+
+fn rename_impl(old_path: &Path, new_path: &Path, overwrite: bool) -> FileResult<()> {
     // Normalize paths for Windows long path support
     let normalized_old = normalize_path(old_path)?;
     let normalized_new = normalize_path(new_path)?;
-    
+
     // Check if source file exists
-    if !normalized_old.exists() {
+    if !path_exists(&normalized_old) {
         return Err(FileError::NotFound(old_path.display().to_string()));
     }
-    
-    // Check if target file already exists
-    if normalized_new.exists() {
+
+    // A case-only change (or no change) targets the source file itself
+    let same_file = same_entry(&normalized_old, &normalized_new);
+
+    if !overwrite && !same_file && path_exists(&normalized_new) {
         return Err(FileError::AlreadyExists(new_path.display().to_string()));
     }
-    
+
     // Check permissions on source file
     check_file_permissions(&normalized_old)?;
-    
-    // Perform the rename
-    fs::rename(&normalized_old, &normalized_new).map_err(|e| {
-        if e.kind() == io::ErrorKind::PermissionDenied {
-            FileError::PermissionDenied(old_path.display().to_string())
-        } else {
-            FileError::IoError(e)
-        }
-    })?;
-    
-    Ok(())
+
+    let result = if overwrite || same_file {
+        fs::rename(&normalized_old, &normalized_new)
+    } else {
+        rename_noreplace(&normalized_old, &normalized_new)
+    };
+
+    result.map_err(|e| match e.kind() {
+        io::ErrorKind::AlreadyExists => FileError::AlreadyExists(new_path.display().to_string()),
+        io::ErrorKind::PermissionDenied => FileError::PermissionDenied(old_path.display().to_string()),
+        _ => FileError::IoError(e),
+    })
+}
+
+/// Whether two paths name the same directory entry. Windows and macOS file
+/// names are case-insensitive, so `a.mov` and `A.mov` are the same file there.
+fn same_entry(a: &Path, b: &Path) -> bool {
+    if cfg!(any(target_os = "windows", target_os = "macos")) {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    }
+}
+
+/// Rename that fails with `AlreadyExists` if `new` exists, checked atomically by the OS.
+#[cfg(target_os = "windows")]
+fn rename_noreplace(old: &Path, new: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+    fn wide(p: &Path) -> Vec<u16> {
+        p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
+    }
+    let (old_w, new_w) = (wide(old), wide(new));
+    // Flags 0: no MOVEFILE_REPLACE_EXISTING, so an existing target is an error
+    if unsafe { MoveFileExW(old_w.as_ptr(), new_w.as_ptr(), 0) } == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Rename that fails with `AlreadyExists` if `new` exists, checked atomically by the OS.
+#[cfg(target_os = "macos")]
+fn rename_noreplace(old: &Path, new: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let to_c = |p: &Path| {
+        CString::new(p.as_os_str().as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))
+    };
+    let (old_c, new_c) = (to_c(old)?, to_c(new)?);
+    if unsafe { libc::renamex_np(old_c.as_ptr(), new_c.as_ptr(), libc::RENAME_EXCL) } == 0 {
+        return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    // Some volumes (e.g. network shares) don't support RENAME_EXCL
+    if matches!(err.raw_os_error(), Some(libc::ENOTSUP) | Some(libc::EINVAL)) {
+        return rename_checked(old, new);
+    }
+    Err(err)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn rename_noreplace(old: &Path, new: &Path) -> io::Result<()> {
+    rename_checked(old, new)
+}
+
+/// Fallback: check, then rename. Leaves a tiny window where a new file could be replaced.
+#[cfg(not(target_os = "windows"))]
+fn rename_checked(old: &Path, new: &Path) -> io::Result<()> {
+    if path_exists(new) {
+        return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+    }
+    fs::rename(old, new)
 }
 
 /// Check if the current process has permission to modify a file
@@ -141,7 +248,7 @@ pub fn rename_file(old_path: &Path, new_path: &Path) -> FileResult<()> {
 /// # Returns
 /// * `FileResult<()>` - Success or permission error
 pub fn check_file_permissions(path: &Path) -> FileResult<()> {
-    let metadata = fs::metadata(path).map_err(|e| {
+    let metadata = stat_path(path).map_err(|e| {
         if e.kind() == io::ErrorKind::PermissionDenied {
             FileError::PermissionDenied(path.display().to_string())
         } else {

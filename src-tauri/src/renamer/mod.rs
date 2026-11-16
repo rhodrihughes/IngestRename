@@ -2,10 +2,11 @@
 //
 // Validates: Requirements 6.1, 6.2, 6.3, 7.1, 7.2, 7.3, 7.4
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use crate::models::{FileMetadata, RenameConfig, RenameResult};
-use crate::file_ops::{rename_file, FileError};
+use crate::file_ops::{rename_file, rename_file_overwrite, FileError};
 use crate::preview::PreviewGenerator;
 use crate::validator::OperatingSystem;
 
@@ -13,6 +14,9 @@ use crate::validator::OperatingSystem;
 pub struct BatchRenamer {
     pub config: RenameConfig,
     os: OperatingSystem,
+    /// Original paths of files the user agreed may overwrite an existing file.
+    /// Every other file is renamed without replacing anything.
+    pub overwrite: HashSet<String>,
 }
 
 impl BatchRenamer {
@@ -22,7 +26,7 @@ impl BatchRenamer {
     /// * `config` - Rename configuration
     /// * `os` - Target operating system
     pub fn new(config: RenameConfig, os: OperatingSystem) -> Self {
-        Self { config, os }
+        Self { config, os, overwrite: HashSet::new() }
     }
 
     /// Execute batch rename operation on all files
@@ -75,7 +79,12 @@ impl BatchRenamer {
         let original_path = Path::new(&file.path);
         let new_path = Path::new(target_path);
         
-        match rename_file(original_path, new_path) {
+        let result = if self.overwrite.contains(&file.path) {
+            rename_file_overwrite(original_path, new_path)
+        } else {
+            rename_file(original_path, new_path)
+        };
+        match result {
             Ok(()) => RenameResult {
                 original_path: file.path.clone(),
                 new_path: target_path.clone(),
