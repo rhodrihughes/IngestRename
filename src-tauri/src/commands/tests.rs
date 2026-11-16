@@ -318,3 +318,25 @@ mod integration_tests {
         assert!(validation.errors[0].contains("additional text"));
     }
 }
+
+#[test]
+fn test_validate_requires_at_least_one_name_part() {
+    let config = RenameConfig {
+        use_prefix: false,
+        use_number: false,
+        include_original_name: false,
+        ..Default::default()
+    };
+    let result = validate_config_internal(&config);
+    assert!(!result.valid);
+}
+
+#[test]
+fn test_validate_ignores_disabled_prefix() {
+    let config = RenameConfig {
+        prefix: "BAD/".to_string(),
+        use_prefix: false,
+        ..Default::default()
+    };
+    assert!(validate_config_internal(&config).valid);
+}

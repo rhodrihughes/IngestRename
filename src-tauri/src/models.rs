@@ -11,12 +11,38 @@ use serde::{Deserialize, Serialize};
 pub struct RenameConfig {
     /// User-defined prefix prepended to all renamed files (default: "BB")
     pub prefix: String,
+
+    /// Whether to prepend the prefix to every filename (default: true)
+    #[serde(default = "default_true")]
+    pub use_prefix: bool,
+
+    /// Whether to include the sequential number (default: true)
+    #[serde(default = "default_true")]
+    pub use_number: bool,
+
+    /// Whether to include the additional text, if any (default: true)
+    #[serde(default = "default_true")]
+    pub use_additional_text: bool,
+
+    /// Where the extra text goes relative to the sequential number
+    /// (default: after, e.g. `BFR_0001_TEXT_...`; before gives `BFR_TEXT_0001_...`)
+    #[serde(default)]
+    pub additional_text_position: AdditionalTextPosition,
+
+    /// Whether to keep the original filename in the result (default: true).
+    /// When false the name starts blank; the file extension is always kept.
+    #[serde(default = "default_true")]
+    pub include_original_name: bool,
     
     /// Starting sequential number for the batch (range: 1-9999, default: 1)
     pub starting_number: u32,
     
     /// Optional text inserted between sequential number and original filename
     pub additional_text: Option<String>,
+
+    /// Zero-padding width of the leading number (default: 4, e.g. 0001)
+    #[serde(default = "default_number_padding")]
+    pub number_padding: u32,
 
     /// Where the incrementing sequence number is placed.
     ///
@@ -38,8 +64,14 @@ pub struct RenameConfig {
 
     /// List of rename operations to apply (for Requirement 12)
     pub operations: Vec<RenameOperation>,
+
+    /// Indices into `operations` that are switched off and must be skipped
+    #[serde(default)]
+    pub disabled_steps: Vec<usize>,
 }
 
+fn default_true() -> bool { true }
+fn default_number_padding() -> u32 { 4 }
 fn default_end_number_start() -> u32 { 1 }
 fn default_end_number_padding() -> u32 { 2 }
 
@@ -47,14 +79,32 @@ impl Default for RenameConfig {
     fn default() -> Self {
         Self {
             prefix: "BB".to_string(),
+            use_prefix: true,
+            use_number: true,
+            use_additional_text: true,
+            include_original_name: true,
             starting_number: 1,
             additional_text: None,
+            additional_text_position: AdditionalTextPosition::After,
+            number_padding: default_number_padding(),
             number_position: NumberPosition::Start,
             end_number_start: default_end_number_start(),
             end_number_padding: default_end_number_padding(),
             operations: Vec::new(),
+            disabled_steps: Vec::new(),
         }
     }
+}
+
+/// Position of the extra text relative to the sequential number
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AdditionalTextPosition {
+    /// Extra text comes before the number
+    Before,
+    /// Extra text comes after the number (default)
+    #[default]
+    After,
 }
 
 /// Position of the incrementing sequence number in the generated filename
@@ -436,4 +486,17 @@ mod tests {
         assert_eq!(PreviewStatus::Error, PreviewStatus::Error);
         assert_ne!(PreviewStatus::Valid, PreviewStatus::Error);
     }
+}
+
+/// App-level settings persisted between launches
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    /// Name of the preset to load on startup (takes priority over `last_config`)
+    #[serde(default)]
+    pub default_preset: Option<String>,
+
+    /// Configuration in use when the app was last used
+    #[serde(default)]
+    pub last_config: Option<RenameConfig>,
 }

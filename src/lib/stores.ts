@@ -9,7 +9,7 @@ import type {
   PreviewResult,
   OperationStatus,
 } from './types';
-import { createDefaultConfig } from './types';
+import { createDefaultConfig, hasNamePart } from './types';
 
 // ============================================================================
 // Core Writable Stores
@@ -78,22 +78,22 @@ export const isConfigValid: Readable<boolean> = derived(
   config,
   ($config) => {
     // Validate starting number
-    if ($config.startingNumber < 1 || $config.startingNumber > 9999) {
+    if ($config.useNumber !== false && ($config.startingNumber < 1 || $config.startingNumber > 9999)) {
       return false;
     }
     
     // Validate prefix is not empty
-    if ($config.prefix.length === 0) {
+    if ($config.usePrefix !== false && $config.prefix.length === 0) {
       return false;
     }
     
     // Basic validation - backend will do OS-specific validation
     const invalidChars = /[<>:"|?*\/\\]/;
-    if (invalidChars.test($config.prefix)) {
+    if ($config.usePrefix !== false && invalidChars.test($config.prefix)) {
       return false;
     }
     
-    return true;
+    return hasNamePart($config);
   }
 );
 

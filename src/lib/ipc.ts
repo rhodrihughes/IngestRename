@@ -12,6 +12,7 @@ import type {
   UndoRecord,
   BatchRenameResponse,
   Preset,
+  AppSettings,
 } from './types';
 
 // ============================================================================
@@ -267,3 +268,26 @@ export async function deletePreset(name: string): Promise<void> {
   }
 }
 
+export async function getSettings(): Promise<AppSettings> {
+  try {
+    return await invoke<AppSettings>('get_settings');
+  } catch (error) {
+    throw wrapIPCError('get_settings', error);
+  }
+}
+
+export async function setDefaultPreset(name: string | null): Promise<void> {
+  try {
+    await invoke('set_default_preset', { name });
+  } catch (error) {
+    throw wrapIPCError('set_default_preset', error);
+  }
+}
+
+export async function saveLastConfig(config: RenameConfig): Promise<void> {
+  try {
+    await invoke('save_last_config', { config });
+  } catch (error) {
+    throw wrapIPCError('save_last_config', error);
+  }
+}

@@ -5,7 +5,7 @@
 use std::path::Path;
 use tauri::{Emitter, Manager};
 
-use crate::models::{FileMetadata, PreviewResult, RenameConfig, RenameResult, UndoRecord, Preset};
+use crate::models::{AppSettings, FileMetadata, PreviewResult, RenameConfig, RenameResult, UndoRecord, Preset};
 use crate::file_ops::{get_file_info as get_file_metadata};
 use crate::preview::PreviewGenerator;
 use crate::renamer::BatchRenamer;
@@ -107,22 +107,39 @@ fn validate_config_internal(config: &RenameConfig) -> ValidationResult {
     let os = OperatingSystem::current();
     
     // Validate prefix
-    if let Err(e) = validate_prefix(&config.prefix, os) {
-        errors.push(e.to_string());
-    }
-    
-    // Validate starting number
-    if let Err(e) = validate_starting_number(config.starting_number) {
-        errors.push(e.to_string());
-    }
-    
-    // Validate additional text if provided
-    if let Some(ref additional_text) = config.additional_text {
-        if let Err(e) = validate_prefix(additional_text, os) {
-            errors.push(format!("Invalid additional text: {}", e));
+    if config.use_prefix {
+        if let Err(e) = validate_prefix(&config.prefix, os) {
+            errors.push(e.to_string());
         }
     }
     
+    // Validate starting number (only relevant when the number is used)
+    if config.use_number {
+        if let Err(e) = validate_starting_number(config.starting_number) {
+            errors.push(e.to_string());
+        }
+    }
+
+    if config.use_number && (config.number_padding == 0 || config.number_padding > 10) {
+        errors.push("Number digits must be between 1 and 10".to_string());
+    }
+
+    // Validate additional text if provided and enabled
+    if config.use_additional_text {
+        if let Some(ref additional_text) = config.additional_text {
+            if let Err(e) = validate_prefix(additional_text, os) {
+                errors.push(format!("Invalid additional text: {}", e));
+            }
+        }
+    }
+
+    // At least one part of the name must be enabled
+    let has_extra_text = config.use_additional_text
+        && config.additional_text.as_deref().map_or(false, |t| !t.is_empty());
+    if !config.use_prefix && !config.use_number && !has_extra_text && !config.include_original_name {
+        errors.push("Pick at least one part of the name".to_string());
+    }
+
     ValidationResult {
         valid: errors.is_empty(),
         errors,
@@ -235,7 +252,61 @@ pub async fn save_preset(app: tauri::AppHandle, preset: Preset) -> Result<(), St
 pub async fn delete_preset(app: tauri::AppHandle, name: String) -> Result<(), String> {
     let mut presets = load_presets(&app)?;
     presets.retain(|p| p.name != name);
+    let mut settings = load_settings(&app);
+    if settings.default_preset.as_deref() == Some(name.as_str()) {
+        settings.default_preset = None;
+        write_settings(&app, &settings)?;
+    }
     write_presets(&app, &presets)
+}
+
+// ── Settings (default preset + last used config) ────────────────────────────
+
+fn settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Could not resolve app data dir: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create app data dir: {}", e))?;
+    Ok(dir.join("settings.json"))
+}
+
+/// Load settings; a missing or unreadable file yields defaults rather than an error.
+fn load_settings(app: &tauri::AppHandle) -> AppSettings {
+    settings_path(app)
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|d| serde_json::from_str(&d).ok())
+        .unwrap_or_default()
+}
+
+fn write_settings(app: &tauri::AppHandle, settings: &AppSettings) -> Result<(), String> {
+    let path = settings_path(app)?;
+    let data = serde_json::to_string_pretty(settings)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    std::fs::write(&path, data).map_err(|e| format!("Failed to write settings: {}", e))
+}
+
+/// Get persisted app settings
+#[tauri::command]
+pub async fn get_settings(app: tauri::AppHandle) -> Result<AppSettings, String> {
+    Ok(load_settings(&app))
+}
+
+/// Set (or clear, with `None`) the preset to load on startup
+#[tauri::command]
+pub async fn set_default_preset(app: tauri::AppHandle, name: Option<String>) -> Result<(), String> {
+    let mut settings = load_settings(&app);
+    settings.default_preset = name;
+    write_settings(&app, &settings)
+}
+
+/// Remember the configuration currently in use
+#[tauri::command]
+pub async fn save_last_config(app: tauri::AppHandle, config: RenameConfig) -> Result<(), String> {
+    let mut settings = load_settings(&app);
+    settings.last_config = Some(config);
+    write_settings(&app, &settings)
 }
 
 // ── Preset helpers ────────────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ use regex::Regex;
 
 use crate::models::{
     FileMetadata, PreviewResult, PreviewStatus, RenameConfig, RenameOperation,
-    FormatType, TextPosition, CaseType, NumberPosition,
+    FormatType, TextPosition, CaseType, NumberPosition, AdditionalTextPosition,
 };
 use crate::file_ops::{check_path_length, PathLengthCheck};
 use crate::validator::{check_file_exists, OperatingSystem};
@@ -102,29 +102,59 @@ impl PreviewGenerator {
         // Apply operations to the original filename first
         let processed_name = self.apply_operations(original_name, index);
 
+        // Without a leading number there is nothing to fix or append, so End mode
+        // behaves like Start.
+        let position = if self.config.use_number {
+            self.config.number_position
+        } else {
+            NumberPosition::Start
+        };
+
         // The leading number is fixed in End mode, incrementing in Start mode.
-        let leading_num = match self.config.number_position {
+        let leading_num = match position {
             NumberPosition::Start => self.config.starting_number + index as u32,
             NumberPosition::End => self.config.starting_number,
         };
 
         // Format leading number as 4-digit zero-padded string
-        let seq_str = format!("{:04}", leading_num);
+        let seq_str = format!("{:0>width$}", leading_num, width = self.config.number_padding as usize);
 
-        // Build the base name according to the naming convention
-        let base = if let Some(ref additional_text) = self.config.additional_text {
-            // With additional text: [prefix]_[NNNN]_[additional_text]_[processed_name]
-            format!(
-                "{}_{}_{}_{}",
-                self.config.prefix, seq_str, additional_text, processed_name
-            )
+        // Build the base name from the enabled parts, joined with underscores:
+        // [prefix]_[NNNN]_[additional_text]_[processed_name]
+        let mut parts: Vec<String> = Vec::new();
+        if self.config.use_prefix && !self.config.prefix.is_empty() {
+            parts.push(self.config.prefix.clone());
+        }
+        let extra = if self.config.use_additional_text {
+            self.config.additional_text.clone()
         } else {
-            // Without additional text: [prefix]_[NNNN]_[processed_name]
-            format!("{}_{}_{}",  self.config.prefix, seq_str, processed_name)
+            None
+        };
+        let extra_first = self.config.additional_text_position == AdditionalTextPosition::Before;
+        if extra_first {
+            parts.extend(extra.clone());
+        }
+        if self.config.use_number {
+            parts.push(seq_str);
+        }
+        if !extra_first {
+            parts.extend(extra);
+        }
+        let base = if self.config.include_original_name {
+            parts.push(processed_name);
+            parts.join("_")
+        } else {
+            // Start blank: drop the original name but keep its extension.
+            let ext = original_name
+                .rfind('.')
+                .filter(|&d| d > 0)
+                .map(|d| &original_name[d..])
+                .unwrap_or("");
+            format!("{}{}", parts.join("_"), ext)
         };
 
         // In End mode, append an incrementing counter before the extension.
-        match self.config.number_position {
+        match position {
             NumberPosition::Start => base,
             NumberPosition::End => {
                 let counter = self.config.end_number_start + index as u32;
@@ -148,7 +178,10 @@ impl PreviewGenerator {
     fn apply_operations(&self, filename: &str, index: usize) -> String {
         let mut result = filename.to_string();
 
-        for operation in &self.config.operations {
+        for (step, operation) in self.config.operations.iter().enumerate() {
+            if self.config.disabled_steps.contains(&step) {
+                continue;
+            }
             result = self.apply_single_operation(&result, operation, index);
         }
 
@@ -659,6 +692,13 @@ mod tests {
         // instead of incrementing the leading number.
         let config = RenameConfig {
             prefix: "BFR".to_string(),
+            use_prefix: true,
+            use_number: true,
+            use_additional_text: true,
+            include_original_name: true,
+            disabled_steps: vec![],
+            number_padding: 4,
+            additional_text_position: AdditionalTextPosition::After,
             starting_number: 1,
             additional_text: Some("STILL".to_string()),
             number_position: NumberPosition::End,
@@ -686,6 +726,13 @@ mod tests {
     fn test_number_position_end_without_additional_text() {
         let config = RenameConfig {
             prefix: "BFR".to_string(),
+            use_prefix: true,
+            use_number: true,
+            use_additional_text: true,
+            include_original_name: true,
+            disabled_steps: vec![],
+            number_padding: 4,
+            additional_text_position: AdditionalTextPosition::After,
             starting_number: 7,
             additional_text: None,
             number_position: NumberPosition::End,
@@ -705,6 +752,13 @@ mod tests {
     fn test_number_position_end_no_extension_appends_counter() {
         let config = RenameConfig {
             prefix: "BFR".to_string(),
+            use_prefix: true,
+            use_number: true,
+            use_additional_text: true,
+            include_original_name: true,
+            disabled_steps: vec![],
+            number_padding: 4,
+            additional_text_position: AdditionalTextPosition::After,
             starting_number: 1,
             additional_text: None,
             number_position: NumberPosition::End,
@@ -721,6 +775,13 @@ mod tests {
     fn test_number_position_end_custom_start_and_padding() {
         let config = RenameConfig {
             prefix: "BFR".to_string(),
+            use_prefix: true,
+            use_number: true,
+            use_additional_text: true,
+            include_original_name: true,
+            disabled_steps: vec![],
+            number_padding: 4,
+            additional_text_position: AdditionalTextPosition::After,
             starting_number: 1,
             additional_text: None,
             number_position: NumberPosition::End,
@@ -732,5 +793,139 @@ mod tests {
         let generator = PreviewGenerator::new(config, OperatingSystem::current());
         assert_eq!(generator.construct_target_name("a.txt", 0), "BFR_0001_a_0010.txt");
         assert_eq!(generator.construct_target_name("a.txt", 2), "BFR_0001_a_0012.txt");
+    }
+
+    #[test]
+    fn test_no_prefix() {
+        let config = RenameConfig {
+            prefix: "BB".to_string(),
+            use_prefix: false,
+            ..Default::default()
+        };
+        let g = PreviewGenerator::new(config, OperatingSystem::current());
+        assert_eq!(g.construct_target_name("video.mp4", 0), "0001_video.mp4");
+    }
+
+    #[test]
+    fn test_blank_original_name_keeps_extension() {
+        let config = RenameConfig {
+            prefix: "BB".to_string(),
+            include_original_name: false,
+            additional_text: Some("Scene".to_string()),
+            ..Default::default()
+        };
+        let g = PreviewGenerator::new(config, OperatingSystem::current());
+        assert_eq!(g.construct_target_name("video.mp4", 1), "BB_0002_Scene.mp4");
+    }
+
+    #[test]
+    fn test_no_number() {
+        let config = RenameConfig {
+            prefix: "BB".to_string(),
+            use_number: false,
+            ..Default::default()
+        };
+        let g = PreviewGenerator::new(config, OperatingSystem::current());
+        assert_eq!(g.construct_target_name("video.mp4", 0), "BB_video.mp4");
+    }
+
+    #[test]
+    fn test_additional_text_disabled() {
+        let config = RenameConfig {
+            prefix: "BB".to_string(),
+            additional_text: Some("Scene".to_string()),
+            use_additional_text: false,
+            ..Default::default()
+        };
+        let g = PreviewGenerator::new(config, OperatingSystem::current());
+        assert_eq!(g.construct_target_name("video.mp4", 0), "BB_0001_video.mp4");
+    }
+
+    #[test]
+    fn test_end_mode_without_number_appends_no_counter() {
+        let config = RenameConfig {
+            prefix: "BB".to_string(),
+            use_number: false,
+            number_position: NumberPosition::End,
+            ..Default::default()
+        };
+        let g = PreviewGenerator::new(config, OperatingSystem::current());
+        assert_eq!(g.construct_target_name("video.mp4", 3), "BB_video.mp4");
+    }
+
+    #[test]
+    fn test_disabled_step_is_skipped() {
+        let config = RenameConfig {
+            prefix: "BB".to_string(),
+            operations: vec![
+                RenameOperation::ChangeCase { case: CaseType::Uppercase },
+                RenameOperation::RemoveText { text: "VIDEO".to_string() },
+            ],
+            disabled_steps: vec![0],
+            ..Default::default()
+        };
+        let g = PreviewGenerator::new(config, OperatingSystem::current());
+        // Step 0 (uppercase) is off, so "video" is not matched by step 1 ("VIDEO").
+        assert_eq!(g.construct_target_name("video.mp4", 0), "BB_0001_video.mp4");
+    }
+
+    #[test]
+    fn test_fixed_number_with_counter_at_end() {
+        // BFR_001_PICS_003, BFR_001_PICS_004
+        let config = RenameConfig {
+            prefix: "BFR".to_string(),
+            starting_number: 1,
+            number_padding: 3,
+            number_position: NumberPosition::End,
+            end_number_start: 3,
+            end_number_padding: 3,
+            include_original_name: false,
+            additional_text: Some("PICS".to_string()),
+            ..Default::default()
+        };
+        let g = PreviewGenerator::new(config, OperatingSystem::current());
+        assert_eq!(g.construct_target_name("a.jpg", 0), "BFR_001_PICS_003.jpg");
+        assert_eq!(g.construct_target_name("b.jpg", 1), "BFR_001_PICS_004.jpg");
+    }
+
+    #[test]
+    fn test_incrementing_number_at_start_custom_padding() {
+        // BFR_001_PORTRAIT, BFR_002_PORTRAIT
+        let config = RenameConfig {
+            prefix: "BFR".to_string(),
+            number_padding: 3,
+            include_original_name: false,
+            additional_text: Some("PORTRAIT".to_string()),
+            ..Default::default()
+        };
+        let g = PreviewGenerator::new(config, OperatingSystem::current());
+        assert_eq!(g.construct_target_name("a.jpg", 0), "BFR_001_PORTRAIT.jpg");
+        assert_eq!(g.construct_target_name("b.jpg", 1), "BFR_002_PORTRAIT.jpg");
+    }
+
+    #[test]
+    fn test_additional_text_before_number() {
+        let config = RenameConfig {
+            prefix: "BFR".to_string(),
+            additional_text: Some("PICS".to_string()),
+            additional_text_position: AdditionalTextPosition::Before,
+            ..Default::default()
+        };
+        let g = PreviewGenerator::new(config, OperatingSystem::current());
+        assert_eq!(g.construct_target_name("a.jpg", 0), "BFR_PICS_0001_a.jpg");
+    }
+
+    #[test]
+    fn test_additional_text_before_number_with_counter_at_end() {
+        let config = RenameConfig {
+            prefix: "BFR".to_string(),
+            additional_text: Some("PICS".to_string()),
+            additional_text_position: AdditionalTextPosition::Before,
+            number_position: NumberPosition::End,
+            include_original_name: false,
+            ..Default::default()
+        };
+        let g = PreviewGenerator::new(config, OperatingSystem::current());
+        assert_eq!(g.construct_target_name("a.jpg", 1), "BFR_PICS_0001_02.jpg");
     }
 }

@@ -13,12 +13,30 @@
 export interface RenameConfig {
   /** User-defined prefix prepended to all renamed files (default: "BFR") */
   prefix: string;
+
+  /** Whether to prepend the prefix to every filename (default: true) */
+  usePrefix?: boolean;
+
+  /** Whether to include the sequential number (default: true) */
+  useNumber?: boolean;
+
+  /** Whether to include the additional text, if any (default: true) */
+  useAdditionalText?: boolean;
+
+  /** Whether to keep the original filename (default: true). When false the name starts blank; the extension is kept. */
+  includeOriginalName?: boolean;
   
   /** Starting sequential number for the batch (range: 1-9999, default: 1) */
   startingNumber: number;
   
   /** Optional text inserted between sequential number and original filename */
   additionalText?: string;
+
+  /** Where the extra text goes relative to the number (default: 'after') */
+  additionalTextPosition?: AdditionalTextPosition;
+
+  /** Zero-padding width of the leading number (default: 4, e.g. 0001) */
+  numberPadding?: number;
 
   /**
    * Where the incrementing sequence number is placed (default: 'start').
@@ -37,6 +55,9 @@ export interface RenameConfig {
   /** Zero-padding width for the appended counter when numberPosition is 'end' (default: 2) */
   endNumberPadding?: number;
 
+  /** Indices into `operations` that are switched off and skipped (default: none) */
+  disabledSteps?: number[];
+
   /** List of rename operations to apply (for Requirement 12) */
   operations: RenameOperation[];
 }
@@ -45,6 +66,11 @@ export interface RenameConfig {
  * Position of the incrementing sequence number in the generated filename
  */
 export type NumberPosition = 'start' | 'end';
+
+/**
+ * Position of the extra text relative to the sequential number
+ */
+export type AdditionalTextPosition = 'before' | 'after';
 
 /**
  * Position for text insertion
@@ -158,6 +184,14 @@ export interface UndoRecord {
 export interface BatchRenameResponse {
   results: RenameResult[];
   undoRecord: UndoRecord;
+}
+
+/** App settings persisted between launches */
+export interface AppSettings {
+  /** Preset loaded on startup; takes priority over lastConfig */
+  defaultPreset?: string | null;
+  /** Configuration in use when the app was last used */
+  lastConfig?: RenameConfig | null;
 }
 
 /** A saved named preset */
@@ -386,14 +420,29 @@ export function validatePrefix(prefix: string): { valid: boolean; error?: string
 }
 
 /**
+ * True when at least one part of the filename (prefix, number, extra text,
+ * original name) is enabled.
+ */
+export function hasNamePart(config: RenameConfig): boolean {
+  const hasExtraText =
+    config.useAdditionalText !== false && !!config.additionalText && config.additionalText.length > 0;
+  return (
+    config.usePrefix !== false ||
+    config.useNumber !== false ||
+    hasExtraText ||
+    config.includeOriginalName !== false
+  );
+}
+
+/**
  * Validates a RenameConfig object
  * Validates: Requirements 3.1.1, 3.1.2, 3.2, 3.3
  */
 export function validateRenameConfig(config: RenameConfig): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
   
-  const prefixValidation = validatePrefix(config.prefix);
-  if (!prefixValidation.valid && prefixValidation.error) {
+  const prefixValidation = config.usePrefix === false ? { valid: true } : validatePrefix(config.prefix);
+  if (!prefixValidation.valid && 'error' in prefixValidation && prefixValidation.error) {
     errors.push(prefixValidation.error);
   }
   
@@ -415,11 +464,18 @@ export function validateRenameConfig(config: RenameConfig): { valid: boolean; er
 export function createDefaultConfig(): RenameConfig {
   return {
     prefix: 'BFR',
+    usePrefix: true,
+    useNumber: true,
+    useAdditionalText: true,
+    includeOriginalName: true,
     startingNumber: 1,
     additionalText: undefined,
+    additionalTextPosition: 'after',
+    numberPadding: 4,
     numberPosition: 'start',
     endNumberStart: 1,
     endNumberPadding: 2,
-    operations: []
+    operations: [],
+    disabledSteps: []
   };
 }

@@ -6,7 +6,7 @@ mod preview;
 mod renamer;
 pub mod models;
 
-use commands::{get_file_info, generate_preview, validate_config, execute_batch_rename, undo_batch_rename, list_presets, save_preset, delete_preset};
+use commands::{get_file_info, generate_preview, validate_config, execute_batch_rename, undo_batch_rename, list_presets, save_preset, delete_preset, get_settings, set_default_preset, save_last_config};
 
 use tauri::menu::{AboutMetadataBuilder, MenuBuilder, SubmenuBuilder};
 use tauri_plugin_dialog::DialogExt;
@@ -101,7 +101,10 @@ pub fn run() {
             undo_batch_rename,
             list_presets,
             save_preset,
-            delete_preset
+            delete_preset,
+            get_settings,
+            set_default_preset,
+            save_last_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

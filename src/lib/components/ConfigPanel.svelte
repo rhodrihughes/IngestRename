@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, createEventDispatcher } from 'svelte';
+  import { createEventDispatcher } from 'svelte';
   import type {
     RenameConfig,
     RenameOperation,
@@ -8,20 +8,26 @@
     TextPosition,
     CaseType,
     NumberPosition,
-    Preset,
+    AdditionalTextPosition,
   } from '$lib/types';
-  import { validatePrefix, validateStartingNumber } from '$lib/types';
-  import { listPresets, savePreset, deletePreset } from '$lib/ipc';
+  import { validatePrefix, validateStartingNumber, hasNamePart } from '$lib/types';
 
   // Props
   export let config: RenameConfig = {
     prefix: 'BFR',
+    usePrefix: true,
+    useNumber: true,
+    useAdditionalText: true,
+    includeOriginalName: true,
     startingNumber: 1,
     additionalText: undefined,
+    additionalTextPosition: 'after',
+    numberPadding: 4,
     numberPosition: 'start',
     endNumberStart: 1,
     endNumberPadding: 2,
     operations: [],
+    disabledSteps: [],
   };
 
   const dispatch = createEventDispatcher<{ configChange: RenameConfig }>();
@@ -33,33 +39,64 @@
   // Local string binding for additionalText (to handle empty string → undefined)
   let additionalTextValue = config.additionalText ?? '';
 
-  // Presets
-  let presets: Preset[] = [];
-  let newPresetName = '';
-  let presetError = '';
+  // Mode tabs. "template" edits the base name; the others edit rename steps.
+  type Tab = 'template' | 'find-replace' | 'add-remove' | 'change-case' | 'format';
+  let activeTab: Tab = 'template';
 
-  onMount(async () => {
-    try {
-      presets = await listPresets();
-    } catch { /* non-fatal */ }
-  });
+  const tabs: { id: Tab; label: string; types: RenameOperation['type'][] }[] = [
+    { id: 'template', label: 'Template', types: [] },
+    { id: 'find-replace', label: 'Find & Replace', types: ['find-replace'] },
+    { id: 'add-remove', label: 'Add / Remove', types: ['add-text', 'remove-text'] },
+    { id: 'change-case', label: 'Change Case', types: ['change-case'] },
+    { id: 'format', label: 'Format', types: ['format'] },
+  ];
+
+  $: visibleOps = config.operations
+    .map((op, index) => ({ op, index }))
+    .filter(({ op }) => (tabs.find((t) => t.id === activeTab)?.types ?? []).includes(op.type));
+
+  function tabCount(types: RenameOperation['type'][]): number {
+    return config.operations.filter((op) => types.includes(op.type)).length;
+  }
+
+  $: nameHasPart = hasNamePart(config);
 
   // -------------------------------------------------------------------------
   // Validation helpers
   // -------------------------------------------------------------------------
 
   function validateAndDispatch() {
-    const prefixResult = validatePrefix(config.prefix);
-    prefixError = prefixResult.valid ? '' : (prefixResult.error ?? '');
+    const prefixResult = config.usePrefix === false ? { valid: true } : validatePrefix(config.prefix);
+    prefixError = prefixResult.valid ? '' : ('error' in prefixResult ? prefixResult.error ?? '' : '');
 
-    const numResult = validateStartingNumber(config.startingNumber);
-    startingNumberError = numResult.valid ? '' : (numResult.error ?? '');
+    const numResult = config.useNumber === false ? { valid: true } : validateStartingNumber(config.startingNumber);
+    startingNumberError = numResult.valid ? '' : ('error' in numResult ? numResult.error ?? '' : '');
 
     dispatch('configChange', { ...config });
   }
 
   function onPrefixInput(e: Event) {
     config.prefix = (e.target as HTMLInputElement).value;
+    validateAndDispatch();
+  }
+
+  function onUsePrefixChange(e: Event) {
+    config.usePrefix = (e.target as HTMLInputElement).checked;
+    validateAndDispatch();
+  }
+
+  function onUseNumberChange(e: Event) {
+    config.useNumber = (e.target as HTMLInputElement).checked;
+    validateAndDispatch();
+  }
+
+  function onUseAdditionalTextChange(e: Event) {
+    config.useAdditionalText = (e.target as HTMLInputElement).checked;
+    validateAndDispatch();
+  }
+
+  function onIncludeOriginalNameChange(e: Event) {
+    config.includeOriginalName = (e.target as HTMLInputElement).checked;
     validateAndDispatch();
   }
 
@@ -76,8 +113,19 @@
     validateAndDispatch();
   }
 
-  function onNumberPositionChange(e: Event) {
-    config.numberPosition = (e.target as HTMLSelectElement).value as NumberPosition;
+  function setTextPosition(pos: AdditionalTextPosition) {
+    config.additionalTextPosition = pos;
+    validateAndDispatch();
+  }
+
+  function setNumberPosition(pos: NumberPosition) {
+    config.numberPosition = pos;
+    validateAndDispatch();
+  }
+
+  function onNumberPaddingInput(e: Event) {
+    const parsed = parseInt((e.target as HTMLInputElement).value, 10);
+    config.numberPadding = isNaN(parsed) ? 4 : Math.min(10, Math.max(1, parsed));
     validateAndDispatch();
   }
 
@@ -114,8 +162,32 @@
     validateAndDispatch();
   }
 
+  function isStepOn(index: number): boolean {
+    return !(config.disabledSteps ?? []).includes(index);
+  }
+
+  function setStepOn(index: number, on: boolean) {
+    const off = new Set(config.disabledSteps ?? []);
+    if (on) off.delete(index);
+    else off.add(index);
+    config.disabledSteps = [...off].sort((a, b) => a - b);
+    validateAndDispatch();
+  }
+
+  let showStepMenu = false;
+
+  function addStepAndShow(type: RenameOperation['type'], tab: Tab) {
+    addOperation(type);
+    showStepMenu = false;
+    activeTab = tab;
+  }
+
   function removeOperation(index: number) {
     config.operations = config.operations.filter((_, i) => i !== index);
+    // Keep the "off" markers pointing at the same steps after the removal
+    config.disabledSteps = (config.disabledSteps ?? [])
+      .filter((i) => i !== index)
+      .map((i) => (i > index ? i - 1 : i));
     validateAndDispatch();
   }
 
@@ -124,12 +196,24 @@
     validateAndDispatch();
   }
 
-  function moveOperation(from: number, to: number) {
-    if (to < 0 || to >= config.operations.length) return;
+  /** Swap a step with its neighbour in the currently visible list. */
+  function moveVisible(pos: number, dir: -1 | 1) {
+    const other = pos + dir;
+    if (other < 0 || other >= visibleOps.length) return;
     const ops = [...config.operations];
-    const [item] = ops.splice(from, 1);
-    ops.splice(to, 0, item);
+    const i = visibleOps[pos].index;
+    const j = visibleOps[other].index;
+    [ops[i], ops[j]] = [ops[j], ops[i]];
     config.operations = ops;
+    // The "off" markers travel with their steps
+    const iOff = !isStepOn(i);
+    const jOff = !isStepOn(j);
+    const off = new Set(config.disabledSteps ?? []);
+    off.delete(i);
+    off.delete(j);
+    if (iOff) off.add(j);
+    if (jOff) off.add(i);
+    config.disabledSteps = [...off].sort((a, b) => a - b);
     validateAndDispatch();
   }
 
@@ -144,85 +228,50 @@
     }
     updateOperation(index, { ...op, format: newFormat });
   }
-
-  // -------------------------------------------------------------------------
-  // Drag-to-reorder
-  // -------------------------------------------------------------------------
-
-  let dragIndex: number | null = null;
-  let dragOverIndex: number | null = null;
-
-  function onDragStart(index: number) {
-    dragIndex = index;
-  }
-
-  function onDragOver(e: DragEvent, index: number) {
-    e.preventDefault();
-    dragOverIndex = index;
-  }
-
-  function onDrop(index: number) {
-    if (dragIndex !== null && dragIndex !== index) {
-      moveOperation(dragIndex, index);
-    }
-    dragIndex = null;
-    dragOverIndex = null;
-  }
-
-  function onDragEnd() {
-    dragIndex = null;
-    dragOverIndex = null;
-  }
-
-  // -------------------------------------------------------------------------
-  // Presets
-  // -------------------------------------------------------------------------
-
-  async function onSavePreset() {
-    const name = newPresetName.trim();
-    if (!name) { presetError = 'Enter a preset name'; return; }
-    presetError = '';
-    try {
-      await savePreset({ name, config: { ...config } });
-      presets = await listPresets();
-      newPresetName = '';
-    } catch (e) {
-      presetError = e instanceof Error ? e.message : 'Failed to save preset';
-    }
-  }
-
-  async function onLoadPreset(preset: Preset) {
-    config = { ...preset.config };
-    additionalTextValue = config.additionalText ?? '';
-    validateAndDispatch();
-  }
-
-  async function onDeletePreset(name: string) {
-    try {
-      await deletePreset(name);
-      presets = await listPresets();
-    } catch { /* non-fatal */ }
-  }
 </script>
 
 <div class="config-panel">
-  <!-- -----------------------------------------------------------------------
-       Basic configuration
-  ----------------------------------------------------------------------- -->
-  <section class="section">
-    <h2 class="section-title">Rename Configuration</h2>
+  <!-- Mode tabs -->
+  <div class="tabs" role="tablist">
+    {#each tabs as tab}
+      <button
+        class="tab"
+        class:tab-active={activeTab === tab.id}
+        type="button"
+        role="tab"
+        aria-selected={activeTab === tab.id}
+        on:click={() => (activeTab = tab.id)}
+      >
+        {tab.label}{#if tab.types.length > 0 && tabCount(tab.types) > 0}<span class="tab-badge">{tabCount(tab.types)}</span>{/if}
+      </button>
+    {/each}
+  </div>
 
+  {#if !nameHasPart}
+    <p class="error-message" role="alert">Pick at least one part of the name.</p>
+  {/if}
+
+  {#if activeTab === 'template'}
+  <section class="section">
+    <p class="hint">Tick the parts to include in each new name.</p>
+
+    <div class="template-grid">
     <!-- Prefix -->
-    <div class="field">
-      <label class="label" for="prefix">Prefix</label>
+    <div class="field" class:field-off={config.usePrefix === false}>
+      <label class="checkbox-label">
+        <input type="checkbox" checked={config.usePrefix !== false} on:change={onUsePrefixChange} />
+        Prefix
+      </label>
       <input
         id="prefix"
         class="input"
         class:input-error={prefixError}
         type="text"
         value={config.prefix}
+        disabled={config.usePrefix === false}
         placeholder="BFR"
         on:input={onPrefixInput}
+        aria-label="Prefix"
         aria-describedby={prefixError ? 'prefix-error' : undefined}
         aria-invalid={prefixError ? 'true' : undefined}
       />
@@ -231,19 +280,24 @@
       {/if}
     </div>
 
-    <!-- Starting Number -->
-    <div class="field">
-      <label class="label" for="starting-number">Starting Number</label>
+    <!-- Number -->
+    <div class="field" class:field-off={config.useNumber === false}>
+      <label class="checkbox-label">
+        <input type="checkbox" checked={config.useNumber !== false} on:change={onUseNumberChange} />
+        {config.numberPosition === 'end' ? 'Number after prefix' : 'Sequential number'} <span class="optional">{config.numberPosition === 'end' ? '(same on every file)' : '(starting at)'}</span>
+      </label>
       <input
         id="starting-number"
         class="input"
         class:input-error={startingNumberError}
         type="number"
         value={config.startingNumber}
+        disabled={config.useNumber === false}
         min="1"
         max="9999"
         step="1"
         on:input={onStartingNumberInput}
+        aria-label="Starting number"
         aria-describedby={startingNumberError ? 'starting-number-error' : undefined}
         aria-invalid={startingNumberError ? 'true' : undefined}
       />
@@ -253,101 +307,132 @@
     </div>
 
     <!-- Additional Text -->
-    <div class="field">
-      <label class="label" for="additional-text">Additional Text <span class="optional">(optional)</span></label>
+    <div class="field" class:field-off={config.useAdditionalText === false}>
+      <label class="checkbox-label">
+        <input type="checkbox" checked={config.useAdditionalText !== false} on:change={onUseAdditionalTextChange} />
+        Extra text
+      </label>
       <input
         id="additional-text"
         class="input"
         type="text"
         value={additionalTextValue}
+        disabled={config.useAdditionalText === false}
         placeholder="e.g. DailyRush"
         on:input={onAdditionalTextInput}
+        aria-label="Extra text"
       />
-      <p class="hint">Inserted between the sequential number and the original filename.</p>
+      <div class="segmented" role="group" aria-label="Extra text position">
+        <button type="button" class="seg" class:seg-active={config.additionalTextPosition === 'before'}
+          aria-pressed={config.additionalTextPosition === 'before'}
+          disabled={config.useAdditionalText === false} on:click={() => setTextPosition('before')}>Before number</button>
+        <button type="button" class="seg" class:seg-active={config.additionalTextPosition !== 'before'}
+          aria-pressed={config.additionalTextPosition !== 'before'}
+          disabled={config.useAdditionalText === false} on:click={() => setTextPosition('after')}>After number</button>
+      </div>
     </div>
 
-    <!-- Number Position -->
+    </div>
+
+    <!-- Original name -->
     <div class="field">
-      <label class="label" for="number-position">Number position</label>
-      <select
-        id="number-position"
-        class="select"
-        value={config.numberPosition ?? 'start'}
-        on:change={onNumberPositionChange}
-      >
-        <option value="start">Start — number after prefix increments (BFR_0001, BFR_0002)</option>
-        <option value="end">End — prefix number stays fixed, counter appended (BFR_0001…_01, BFR_0001…_02)</option>
-      </select>
+      <label class="checkbox-label">
+        <input type="checkbox" checked={config.includeOriginalName !== false} on:change={onIncludeOriginalNameChange} />
+        Keep original filename
+      </label>
+      <p class="hint">Untick to start blank. The file extension is always kept.</p>
+    </div>
+
+    <!-- Number placement -->
+    <div class="field" class:field-off={config.useNumber === false}>
+      <span class="label" id="number-position-label">Increasing number goes</span>
+      <div class="segmented" role="group" aria-labelledby="number-position-label">
+        <button
+          type="button"
+          class="seg"
+          class:seg-active={(config.numberPosition ?? 'start') === 'start'}
+          aria-pressed={(config.numberPosition ?? 'start') === 'start'}
+          disabled={config.useNumber === false}
+          on:click={() => setNumberPosition('start')}
+        >At start</button>
+        <button
+          type="button"
+          class="seg"
+          class:seg-active={config.numberPosition === 'end'}
+          aria-pressed={config.numberPosition === 'end'}
+          disabled={config.useNumber === false}
+          on:click={() => setNumberPosition('end')}
+        >At end</button>
+      </div>
       <p class="hint">
-        Choose "End" to keep the same starting number on every file and increment a
-        counter added to the end of each filename instead.
+        {#if config.numberPosition === 'end'}
+          The number after the prefix stays the same on every file. A counter that
+          increases is added at the end (e.g. BFR_001_PICS_003, BFR_001_PICS_004).
+        {:else}
+          The number after the prefix increases on every file (e.g. BFR_001_PORTRAIT, BFR_002_PORTRAIT).
+        {/if}
       </p>
     </div>
 
-    {#if (config.numberPosition ?? 'start') === 'end'}
-      <!-- Appended counter start -->
-      <div class="field">
-        <label class="label" for="end-number-start">Appended counter start</label>
-        <input
-          id="end-number-start"
-          class="input"
-          type="number"
-          min="0"
-          max="9999"
-          step="1"
-          value={config.endNumberStart ?? 1}
-          on:input={onEndNumberStartInput}
-        />
+    <div class="template-grid">
+      <div class="field" class:field-off={config.useNumber === false}>
+        <label class="label" for="number-padding">{config.numberPosition === 'end' ? 'Fixed number digits' : 'Number digits'}</label>
+        <input id="number-padding" class="input" type="number" min="1" max="10" step="1"
+          value={config.numberPadding ?? 4} disabled={config.useNumber === false} on:input={onNumberPaddingInput} />
       </div>
 
-      <!-- Appended counter digits -->
-      <div class="field">
-        <label class="label" for="end-number-padding">Appended counter digits</label>
-        <input
-          id="end-number-padding"
-          class="input"
-          type="number"
-          min="1"
-          max="10"
-          step="1"
-          value={config.endNumberPadding ?? 2}
-          on:input={onEndNumberPaddingInput}
-        />
-        <p class="hint">Zero-padding width for the appended counter (e.g. 2 → 01, 02).</p>
+      {#if config.numberPosition === 'end' && config.useNumber !== false}
+        <div class="field">
+          <label class="label" for="end-number-start">Counter starts at</label>
+          <input id="end-number-start" class="input" type="number" min="0" max="9999" step="1"
+            value={config.endNumberStart ?? 1} on:input={onEndNumberStartInput} />
+        </div>
+        <div class="field">
+          <label class="label" for="end-number-padding">Counter digits</label>
+          <input id="end-number-padding" class="input" type="number" min="1" max="10" step="1"
+            value={config.endNumberPadding ?? 2} on:input={onEndNumberPaddingInput} />
+        </div>
+      {/if}
+    </div>
+
+    <!-- Add step -->
+    <button class="link-btn" type="button" aria-expanded={showStepMenu} on:click={() => (showStepMenu = !showStepMenu)}>+ Add step</button>
+    {#if showStepMenu}
+      <div class="add-ops">
+        <button class="add-op-btn" type="button" on:click={() => addStepAndShow('find-replace', 'find-replace')}>Find &amp; Replace</button>
+        <button class="add-op-btn" type="button" on:click={() => addStepAndShow('add-text', 'add-remove')}>Add Text</button>
+        <button class="add-op-btn" type="button" on:click={() => addStepAndShow('remove-text', 'add-remove')}>Remove Text</button>
+        <button class="add-op-btn" type="button" on:click={() => addStepAndShow('change-case', 'change-case')}>Change Case</button>
+        <button class="add-op-btn" type="button" on:click={() => addStepAndShow('format', 'format')}>Format</button>
       </div>
     {/if}
   </section>
+  {/if}
 
   <!-- -----------------------------------------------------------------------
        Operation builder (Requirement 12)
   ----------------------------------------------------------------------- -->
+  {#if activeTab !== 'template'}
   <section class="section">
-    <h2 class="section-title">Rename Operations</h2>
-    <p class="hint">Add optional operations applied to each filename.</p>
+    <p class="hint">Steps run in order on the original name, after the template is built.</p>
 
-    {#if config.operations.length > 0}
+    {#if visibleOps.length > 0}
       <ul class="operations-list">
-        {#each config.operations as op, index (index)}
-          <li
-            class="operation-item"
-            class:drag-over={dragOverIndex === index}
-            draggable="true"
-            on:dragstart={() => onDragStart(index)}
-            on:dragover={(e) => onDragOver(e, index)}
-            on:drop={() => onDrop(index)}
-            on:dragend={onDragEnd}
-          >
+        {#each visibleOps as { op, index }, pos (index)}
+          <li class="operation-item" class:step-off={!isStepOn(index)}>
             <div class="operation-header">
-              <span class="drag-handle" aria-hidden="true">⠿</span>
-              <span class="operation-type-badge">{op.type}</span>
+              <label class="checkbox-label step-toggle">
+                <input type="checkbox" checked={isStepOn(index)} on:change={(e) => setStepOn(index, (e.target as HTMLInputElement).checked)} aria-label="Step enabled" />
+                <span class="operation-type-badge">{op.type}</span>
+              </label>
               <div class="op-header-actions">
-                <button class="move-btn" type="button" on:click={() => moveOperation(index, index - 1)} disabled={index === 0} aria-label="Move up">↑</button>
-                <button class="move-btn" type="button" on:click={() => moveOperation(index, index + 1)} disabled={index === config.operations.length - 1} aria-label="Move down">↓</button>
+                <button class="move-btn" type="button" on:click={() => moveVisible(pos, -1)} disabled={pos === 0} aria-label="Move up">↑</button>
+                <button class="move-btn" type="button" on:click={() => moveVisible(pos, 1)} disabled={pos === visibleOps.length - 1} aria-label="Move down">↓</button>
                 <button
                   class="remove-btn"
                   type="button"
                   on:click={() => removeOperation(index)}
-                  aria-label="Remove operation {index + 1}"
+                  aria-label="Remove step {pos + 1}"
                 >✕</button>
               </div>
             </div>
@@ -528,55 +613,23 @@
         {/each}
       </ul>
     {:else}
-      <p class="empty-ops">No operations added. Use the buttons below to add operations.</p>
+      <p class="empty-ops">No steps yet.</p>
     {/if}
 
-    <!-- Add operation buttons -->
     <div class="add-ops">
-      <button class="add-op-btn" type="button" on:click={() => addOperation('find-replace')}>+ Find &amp; Replace</button>
-      <button class="add-op-btn" type="button" on:click={() => addOperation('add-text')}>+ Add Text</button>
-      <button class="add-op-btn" type="button" on:click={() => addOperation('change-case')}>+ Change Case</button>
-      <button class="add-op-btn" type="button" on:click={() => addOperation('remove-text')}>+ Remove Text</button>
-      <button class="add-op-btn" type="button" on:click={() => addOperation('format')}>+ Format</button>
+      {#if activeTab === 'find-replace'}
+        <button class="add-op-btn" type="button" on:click={() => addOperation('find-replace')}>+ Find &amp; Replace</button>
+      {:else if activeTab === 'add-remove'}
+        <button class="add-op-btn" type="button" on:click={() => addOperation('add-text')}>+ Add Text</button>
+        <button class="add-op-btn" type="button" on:click={() => addOperation('remove-text')}>+ Remove Text</button>
+      {:else if activeTab === 'change-case'}
+        <button class="add-op-btn" type="button" on:click={() => addOperation('change-case')}>+ Change Case</button>
+      {:else if activeTab === 'format'}
+        <button class="add-op-btn" type="button" on:click={() => addOperation('format')}>+ Format</button>
+      {/if}
     </div>
   </section>
-
-  <!-- -----------------------------------------------------------------------
-       Presets
-  ----------------------------------------------------------------------- -->
-  <section class="section">
-    <h2 class="section-title">Presets</h2>
-
-    {#if presets.length > 0}
-      <ul class="presets-list">
-        {#each presets as preset}
-          <li class="preset-item">
-            <span class="preset-name">{preset.name}</span>
-            <div class="preset-actions">
-              <button class="preset-load-btn" type="button" on:click={() => onLoadPreset(preset)}>Load</button>
-              <button class="preset-delete-btn" type="button" on:click={() => onDeletePreset(preset.name)} aria-label="Delete preset {preset.name}">✕</button>
-            </div>
-          </li>
-        {/each}
-      </ul>
-    {:else}
-      <p class="hint">No saved presets.</p>
-    {/if}
-
-    <div class="preset-save-row">
-      <input
-        class="input"
-        type="text"
-        placeholder="Preset name"
-        bind:value={newPresetName}
-        on:keydown={(e) => e.key === 'Enter' && onSavePreset()}
-      />
-      <button class="add-op-btn" type="button" on:click={onSavePreset}>Save</button>
-    </div>
-    {#if presetError}
-      <p class="error-message" role="alert">{presetError}</p>
-    {/if}
-  </section>
+  {/if}
 </div>
 
 <style>
@@ -690,13 +743,6 @@
     align-items: center;
   }
 
-  .drag-handle {
-    cursor: grab;
-    color: #9ca3af;
-    font-size: 1rem;
-    padding: 0 0.25rem;
-    user-select: none;
-  }
 
   .op-header-actions {
     display: flex;
@@ -726,10 +772,6 @@
     background-color: #e5e7eb;
   }
 
-  .drag-over {
-    outline: 2px dashed #6366f1;
-    outline-offset: 2px;
-  }
 
   .checkbox-label {
     display: flex;
@@ -740,79 +782,119 @@
     cursor: pointer;
   }
 
-  .presets-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
+
+
+
+
+
+  .tabs {
     display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    padding: 0.125rem;
+    background-color: #f3f4f6;
+    border-radius: 0.5rem;
   }
 
-  .preset-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.375rem 0.625rem;
-    border: 1px solid #e5e7eb;
+  .tab {
+    flex: 1 1 auto;
+    padding: 0.375rem 0.5rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    border: none;
     border-radius: 0.375rem;
-    background-color: #f9fafb;
-  }
-
-  .preset-name {
-    font-size: 0.875rem;
+    background: none;
     color: #374151;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    cursor: pointer;
     white-space: nowrap;
   }
 
-  .preset-actions {
-    display: flex;
-    gap: 0.25rem;
-    flex-shrink: 0;
+  .tab-active {
+    background-color: #4f46e5;
+    color: #fff;
   }
 
-  .preset-load-btn {
-    padding: 0.25rem 0.5rem;
-    font-size: 0.75rem;
-    font-weight: 500;
-    border: 1px solid #d1d5db;
-    border-radius: 0.25rem;
-    background-color: #fff;
-    color: #374151;
-    cursor: pointer;
-    transition: background-color 0.15s;
+  .tab-badge {
+    margin-left: 0.25rem;
+    padding: 0 0.375rem;
+    font-size: 0.6875rem;
+    border-radius: 9999px;
+    background-color: rgba(255, 255, 255, 0.25);
   }
 
-  .preset-load-btn:hover {
-    background-color: #f3f4f6;
+  .field-off .label,
+  .field-off .optional {
+    opacity: 0.5;
   }
 
-  .preset-delete-btn {
-    background: none;
-    border: none;
-    cursor: pointer;
-    color: #9ca3af;
-    font-size: 0.75rem;
-    padding: 0.25rem;
-    border-radius: 0.25rem;
-    transition: color 0.15s, background-color 0.15s;
+  .input:disabled,
+  .select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
-  .preset-delete-btn:hover {
-    color: #ef4444;
-    background-color: #fee2e2;
+  .template-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 0.75rem;
   }
 
-  .preset-save-row {
-    display: flex;
+  .step-toggle {
     gap: 0.5rem;
   }
 
-  .preset-save-row .input {
-    flex: 1;
+  .step-off .operation-fields {
+    opacity: 0.45;
   }
+
+  .segmented {
+    display: inline-flex;
+    align-self: flex-start;
+    padding: 0.125rem;
+    background-color: #f3f4f6;
+    border-radius: 0.5rem;
+  }
+
+  .seg {
+    padding: 0.3125rem 0.875rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    border: none;
+    border-radius: 0.375rem;
+    background: none;
+    color: #374151;
+    cursor: pointer;
+  }
+
+  .seg:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .seg-active {
+    background-color: #4f46e5;
+    color: #fff;
+  }
+
+  .link-btn {
+    align-self: flex-start;
+    background: none;
+    border: none;
+    padding: 0;
+    font-size: 0.8125rem;
+    color: #4f46e5;
+    cursor: pointer;
+  }
+
+
+
+
+
+
+
+
+
+
 
   .operation-type-badge {
     font-size: 0.75rem;
@@ -883,6 +965,33 @@
 
   /* Dark mode */
   @media (prefers-color-scheme: dark) {
+    .tabs,
+    .segmented {
+      background-color: #111827;
+    }
+
+    .seg {
+      color: #d1d5db;
+    }
+
+    .seg-active {
+      color: #fff;
+    }
+
+    .tab {
+      color: #d1d5db;
+    }
+
+    .tab-active {
+      background-color: #4f46e5;
+      color: #fff;
+    }
+
+
+    .link-btn {
+      color: #818cf8;
+    }
+
     .section-title {
       color: #f9fafb;
     }
@@ -938,31 +1047,13 @@
       color: #9ca3af;
     }
 
-    .drag-handle {
-      color: #6b7280;
-    }
 
     .checkbox-label {
       color: #d1d5db;
     }
 
-    .preset-item {
-      background-color: #111827;
-      border-color: #374151;
-    }
 
-    .preset-name {
-      color: #d1d5db;
-    }
 
-    .preset-load-btn {
-      background-color: #1f2937;
-      border-color: #374151;
-      color: #d1d5db;
-    }
 
-    .preset-load-btn:hover {
-      background-color: #374151;
-    }
   }
 </style>
