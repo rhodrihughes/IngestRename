@@ -50,6 +50,13 @@ Builds distributed without an Apple Developer certificate will be blocked by Gat
 
 This is a one-time step. After the first launch, the app opens normally with a double-click.
 
+#### Updating
+
+IngestRename does not update itself and does not check for new versions. To update:
+
+1. Check the [Releases](../../releases) page for a version newer than the one you have installed
+2. Download the latest `.msi` (Windows) or `.dmg` (macOS) and install it over the existing copy. On Windows, run the installer. On macOS, drag the app into Applications and choose **Replace**
+
 ---
 
 ## Basic usage
